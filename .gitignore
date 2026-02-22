@@ -1,0 +1,43 @@
+# Database
+*.db
+*.db-wal
+*.db-shm
+
+# Runtime state
+*.pid
+*.flag
+*.processing
+
+# Scratch / working files
+scratch/
+scroll-analysis-output/
+
+# Legacy flat-file data
+messages.json
+
+# Node
+node_modules/
+
+# Environment / credentials
+.env
+.env.*
+.claude/credentials.md
+
+# IDE
+.vscode/
+.idea/
+.cursor/
+*.swp
+*~
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Windows path glitch (Vite bug)
+c:*
+c\:*
+
+# Claude temp files
+tmpclaude-*

@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Claude Collab Chatroom</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="app">
+        <header>
+            <h1>Claude Collab</h1>
+            <div id="status-bar">
+                <span id="connection-status" class="status-dot online"></span>
+                <span id="session-badge" class="badge paused">SESSION OFF</span>
+                <span id="message-count">0 messages</span>
+                <span id="exchange-count"></span>
+            </div>
+            <div id="session-controls">
+                <button id="session-toggle" class="control-btn startup">STARTUP</button>
+            </div>
+        </header>
+
+        <main id="chat-container">
+            <div id="messages"></div>
+        </main>
+
+        <footer id="input-area">
+            <div id="sender-select">
+                <button class="sender-btn active" data-sender="Rob">Rob</button>
+                <button class="sender-btn" data-sender="Code">Code</button>
+                <button class="sender-btn" data-sender="Desktop">Desktop</button>
+                <button class="sender-btn" data-sender="Web">Web</button>
+            </div>
+            <div id="compose">
+                <textarea id="message-input" placeholder="Type a message... Use @Code @Desktop @Web @Rob to mention." rows="3"></textarea>
+                <button id="send-btn">Send</button>
+            </div>
+            <div id="participant-status"></div>
+        </footer>
+    </div>
+
+    <!-- New message notification sound (short beep via Web Audio API) -->
+    <script>
+        const API = 'api.php';
+        let currentSender = 'Rob';
+        let lastMessageId = 0;
+        let isPolling = false;
+        let stateCounter = 0;
+        let flashInterval = null;
+        let typingTimer = null;
+        const originalTitle = document.title;
+
+        // --- DOM refs ---
+        const messagesEl = document.getElementById('messages');
+        const inputEl = document.getElementById('message-input');
+        const sendBtn = document.getElementById('send-btn');
+        const countEl = document.getElementById('message-count');
+        const exchangeEl = document.getElementById('exchange-count');
+        const statusDot = document.getElementById('connection-status');
+        const sessionBadge = document.getElementById('session-badge');
+        const sessionToggle = document.getElementById('session-toggle');
+        const participantStatusEl = document.getElementById('participant-status');
+        let sessionActive = false;
+        const senderBtns = document.querySelectorAll('.sender-btn');
+
+        // --- Request notification permission on first click ---
+        if (typeof Notification !== 'undefined') {
+            document.addEventListener('click', function requestNotifPerm() {
+                if (Notification.permission === 'default') {
+                    Notification.requestPermission();
+                }
+                document.removeEventListener('click', requestNotifPerm);
+            });
+        }
+
+        // --- Taskbar flash via Web Notification ---
+        function flashTaskbar(sender, text) {
+            if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+            const n = new Notification('Claude Collab — ' + sender, {
+                body: text.length > 100 ? text.slice(0, 100) + '...' : text,
+                tag: 'claude-collab-msg',
+                requireInteraction: false
+            });
+            n.onclick = () => { window.focus(); n.close(); };
+            setTimeout(() => n.close(), 8000);
+        }
+
+        // --- Notification sound (short beep, reuse AudioContext) ---
+        let audioCtx = null;
+        function playNotificationSound() {
+            try {
+                if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                if (audioCtx.state === 'suspended') audioCtx.resume();
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+                osc.frequency.value = 800;
+                osc.type = 'sine';
+                gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.3);
+                osc.start(audioCtx.currentTime);
+                osc.stop(audioCtx.currentTime + 0.3);
+            } catch (e) { /* Audio not available */ }
+        }
+
+        // --- Sender selection ---
+        senderBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                senderBtns.forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                currentSender = btn.dataset.sender;
+                inputEl.focus();
+            });
+        });
+
+        // --- Session toggle ---
+        sessionToggle.addEventListener('click', async () => {
+            const newState = sessionActive ? 'paused' : 'active';
+            const msg = sessionActive ? 'Session stopped by Rob.' : 'Session started by Rob.';
+            try {
+                await fetch(API, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: 'session', state: newState })
+                });
+                await fetch(API, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ from: 'System', content: msg })
+                });
+                fetchState();
+                fetchMessages();
+            } catch (e) { console.error('Session toggle failed:', e); }
+        });
+
+        // --- Typing indicator (Rob priority enforcement, throttled to 1 POST per 3s) ---
+        let lastTypingSent = 0;
+        inputEl.addEventListener('input', () => {
+            if (currentSender === 'Rob') {
+                const now = Date.now();
+                if (now - lastTypingSent < 3000) return;
+                lastTypingSent = now;
+                fetch(API, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: 'typing', participant: 'Rob' })
+                }).catch(() => {});
+            }
+        });
+
+        // --- Send message ---
+        async function sendMessage() {
+            const content = inputEl.value.trim();
+            if (!content) return;
+
+            sendBtn.disabled = true;
+            try {
+                const res = await fetch(API, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ from: currentSender, content })
+                });
+                const data = await res.json();
+                if (data.ok) {
+                    inputEl.value = '';
+                    await fetchMessages();
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            } catch (e) {
+                console.error('Send failed:', e);
+                statusDot.className = 'status-dot offline';
+            } finally {
+                sendBtn.disabled = false;
+                inputEl.focus();
+            }
+        }
+
+        sendBtn.addEventListener('click', sendMessage);
+        inputEl.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+
+        // --- Parse timestamp (handles both Z-terminated and bare UTC) ---
+        function parseTimestamp(ts) {
+            if (!ts) return null;
+            // Strip trailing Z if present, then add it back once
+            const clean = ts.replace(/Z+$/, '') + 'Z';
+            const d = new Date(clean);
+            return isNaN(d.getTime()) ? null : d;
+        }
+
+        // --- Fetch & render messages ---
+        async function fetchMessages() {
+            try {
+                const res = await fetch(`${API}?action=messages&since=${lastMessageId}`, {cache: 'no-store'});
+                const data = await res.json();
+                // Status dot reflects connection health, not session state (fetchState handles session)
+                if (data.ok) statusDot.className = 'status-dot online';
+
+                if (data.ok && data.messages && data.messages.length > 0) {
+                    // Check if user is near bottom before appending
+                    const wasNearBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 80;
+
+                    data.messages.forEach(renderMessage);
+                    lastMessageId = data.messages[data.messages.length - 1].id;
+
+                    // Only auto-scroll if user was already near the bottom
+                    if (wasNearBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
+
+                    // Notify: blink tab + sound + taskbar flash if window not focused
+                    if (!document.hasFocus()) {
+                        const otherMsg = data.messages.find(m => (m.participant || m.from) !== currentSender);
+                        if (otherMsg) {
+                            flashTitle('New message!');
+                            playNotificationSound();
+                            flashTaskbar(otherMsg.participant || otherMsg.from, otherMsg.content);
+                        }
+                    }
+
+                    // Blink the new messages
+                    data.messages.forEach(m => {
+                        const el = messagesEl.querySelector(`[data-id="${m.id}"]`);
+                        if (el) {
+                            el.classList.add('new-message');
+                            setTimeout(() => el.classList.remove('new-message'), 2000);
+                        }
+                    });
+                }
+
+                if (data.total !== undefined) {
+                    countEl.textContent = data.total + ' messages';
+                }
+            } catch (e) {
+                console.error('Poll failed:', e);
+                statusDot.className = 'status-dot offline';
+            }
+        }
+
+        // --- Fetch session state (every 5th poll = ~15s) ---
+        async function fetchState() {
+            try {
+                const res = await fetch(`${API}?action=state`, {cache: 'no-store'});
+                const data = await res.json();
+                if (!data.ok) return;
+
+                const s = data.state;
+                const active = s.session_active === 'true';
+                sessionActive = active;
+                sessionBadge.textContent = active ? 'SESSION ACTIVE' : 'SESSION OFF';
+                sessionBadge.className = 'badge ' + (active ? 'active' : 'paused');
+                statusDot.className = 'status-dot ' + (active ? 'online' : 'offline');
+                sessionToggle.textContent = active ? 'END SESSION' : 'STARTUP';
+                sessionToggle.className = 'control-btn ' + (active ? 'stop' : 'startup');
+
+                const counter = parseInt(s.exchange_counter || '0');
+                const cap = parseInt(s.exchange_cap || '5');
+                exchangeEl.textContent = active ? `Exchanges: ${counter}/${cap}` : '';
+
+                participantStatusEl.innerHTML = '';
+                ['Code', 'Desktop', 'Web'].forEach(p => {
+                    const st = (s['participant_status_' + p] || 'idle').replace(/[^a-z]/g, '');
+                    const span = document.createElement('span');
+                    span.className = `p-status ${st}`;
+                    span.textContent = `${p}: ${st}`;
+                    participantStatusEl.appendChild(span);
+                });
+
+            } catch (e) {
+                console.error('State fetch failed:', e);
+            }
+        }
+
+        function renderMessage(msg) {
+            const div = document.createElement('div');
+            const sender = (msg.participant && msg.participant !== '') ? msg.participant : (msg.from || 'Unknown');
+            div.className = `message from-${sender.toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
+            div.dataset.id = msg.id;
+
+            const dt = parseTimestamp(msg.timestamp);
+            const time = dt ? dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+
+            const contentHtml = escapeHtml(msg.content)
+                .replace(/@(Rob|Code|Desktop|Web)/g, '<span class="mention">@$1</span>')
+                .replace(/\n/g, '<br>');
+
+            const statusIcon = msg.status === 'read' ? '&#10003;&#10003;' : msg.status === 'delivered' ? '&#10003;' : '&#9675;';
+
+            const safeStatus = escapeHtml(msg.status || 'pending');
+            const safeMentions = (msg.mentions && msg.mentions.length > 0)
+                ? msg.mentions.map(m => '@' + escapeHtml(m)).join(', ')
+                : '';
+
+            div.innerHTML = `
+                <div class="msg-header">
+                    <span class="msg-sender">${escapeHtml(sender)}</span>
+                    <span class="msg-time">${time}</span>
+                    <span class="msg-status" title="${safeStatus}">${statusIcon}</span>
+                </div>
+                <div class="msg-content">${contentHtml}</div>
+                ${safeMentions ? `<div class="msg-mentions">&rarr; ${safeMentions}</div>` : ''}
+            `;
+
+            messagesEl.appendChild(div);
+        }
+
+        function escapeHtml(str) {
+            const d = document.createElement('div');
+            d.textContent = str;
+            return d.innerHTML;
+        }
+
+        let flashTimeout = null;
+        function flashTitle(text) {
+            // Clear any existing flash + its safety timeout
+            if (flashInterval) { clearInterval(flashInterval); flashInterval = null; }
+            if (flashTimeout) { clearTimeout(flashTimeout); flashTimeout = null; }
+
+            let flashing = true;
+            flashInterval = setInterval(() => {
+                document.title = flashing ? text : originalTitle;
+                flashing = !flashing;
+            }, 500);
+            flashTimeout = setTimeout(() => {
+                if (flashInterval) { clearInterval(flashInterval); flashInterval = null; }
+                flashTimeout = null;
+                document.title = originalTitle;
+            }, 15000);
+            window.addEventListener('focus', () => {
+                if (flashInterval) { clearInterval(flashInterval); flashInterval = null; }
+                if (flashTimeout) { clearTimeout(flashTimeout); flashTimeout = null; }
+                document.title = originalTitle;
+            }, { once: true });
+        }
+
+        // --- Polling (with overlap guard + visibility catch-up) ---
+        function startPolling(intervalMs = 3000) {
+            fetchMessages();
+            fetchState();
+
+            setInterval(async () => {
+                if (isPolling) return;
+                isPolling = true;
+                try {
+                    await fetchMessages();
+                    stateCounter++;
+                    if (stateCounter >= 5) { // State every ~15s
+                        await fetchState();
+                        stateCounter = 0;
+                    }
+                } finally {
+                    isPolling = false;
+                }
+            }, intervalMs);
+
+            // Catch up immediately when tab becomes visible (Chrome throttles bg tabs)
+            document.addEventListener('visibilitychange', () => {
+                if (!document.hidden && !isPolling) {
+                    fetchMessages();
+                    fetchState();
+                }
+            });
+        }
+
+        startPolling();
+    </script>
+</body>
+</html>
