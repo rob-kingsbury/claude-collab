@@ -23,6 +23,10 @@
 
         <main id="chat-container">
             <div id="messages"></div>
+            <div id="typing-indicator" class="typing-indicator hidden">
+                <span class="typing-sender"></span>
+                <span class="typing-dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
+            </div>
         </main>
 
         <footer id="input-area">
@@ -46,7 +50,6 @@
         let currentSender = 'Rob';
         let lastMessageId = 0;
         let isPolling = false;
-        let stateCounter = 0;
         let flashInterval = null;
         let typingTimer = null;
         const originalTitle = document.title;
@@ -61,6 +64,8 @@
         const sessionBadge = document.getElementById('session-badge');
         const sessionToggle = document.getElementById('session-toggle');
         const participantStatusEl = document.getElementById('participant-status');
+        const typingIndicator = document.getElementById('typing-indicator');
+        const typingSender = typingIndicator.querySelector('.typing-sender');
         let sessionActive = false;
         const senderBtns = document.querySelectorAll('.sender-btn');
 
@@ -271,8 +276,29 @@
                     participantStatusEl.appendChild(span);
                 });
 
+                updateTypingIndicator(s);
+
             } catch (e) {
                 console.error('State fetch failed:', e);
+            }
+        }
+
+        function updateTypingIndicator(stateObj) {
+            const busyParticipants = [];
+            ['Code', 'Desktop', 'Web'].forEach(p => {
+                if ((stateObj['participant_status_' + p] || 'idle') === 'busy') busyParticipants.push(p);
+            });
+
+            const wasVisible = !typingIndicator.classList.contains('hidden');
+
+            if (busyParticipants.length > 0) {
+                const label = busyParticipants.join(' & ');
+                typingSender.textContent = label + (busyParticipants.length === 1 ? ' is' : ' are') + ' thinking';
+                typingIndicator.classList.remove('hidden');
+                const nearBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 80;
+                if (!wasVisible && nearBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
+            } else {
+                typingIndicator.classList.add('hidden');
             }
         }
 
@@ -338,21 +364,35 @@
             }, { once: true });
         }
 
-        // --- Polling (with overlap guard + visibility catch-up) ---
-        function startPolling(intervalMs = 3000) {
-            fetchMessages();
-            fetchState();
+        // --- Polling (with overlap guard + visibility catch-up + auto-start) ---
+        async function startPolling(intervalMs = 3000) {
+            await fetchMessages();
+            await fetchState();
+
+            // Auto-start session if not active
+            if (!sessionActive) {
+                try {
+                    await fetch(API, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ action: 'session', state: 'active' })
+                    });
+                    await fetch(API, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ from: 'System', content: 'Session auto-started.' })
+                    });
+                    await fetchState();
+                    await fetchMessages();
+                } catch (e) { console.error('Auto-start failed:', e); }
+            }
 
             setInterval(async () => {
                 if (isPolling) return;
                 isPolling = true;
                 try {
                     await fetchMessages();
-                    stateCounter++;
-                    if (stateCounter >= 5) { // State every ~15s
-                        await fetchState();
-                        stateCounter = 0;
-                    }
+                    await fetchState();
                 } finally {
                     isPolling = false;
                 }
