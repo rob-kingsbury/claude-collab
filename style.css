@@ -8,9 +8,10 @@
     --text-dim: #888;
     --accent: #e94560;
     --rob: #4fc3f7;
-    --code: #81c784;
-    --desktop: #ffb74d;
+    --soren: #81c784;
+    --atlas: #ffb74d;
     --web: #ce93d8;
+    --ellison: #f48fb1;
     --mention: #e94560;
     --online: #4caf50;
     --offline: #f44336;
@@ -92,9 +93,10 @@ header h1 {
 }
 
 .message.from-rob { border-left-color: var(--rob); }
-.message.from-code { border-left-color: var(--code); }
-.message.from-desktop { border-left-color: var(--desktop); }
+.message.from-soren { border-left-color: var(--soren); }
+.message.from-atlas { border-left-color: var(--atlas); }
 .message.from-web { border-left-color: var(--web); }
+.message.from-ellison { border-left-color: var(--ellison); font-style: italic; }
 
 .msg-header {
     display: flex;
@@ -109,9 +111,10 @@ header h1 {
 }
 
 .from-rob .msg-sender { color: var(--rob); }
-.from-code .msg-sender { color: var(--code); }
-.from-desktop .msg-sender { color: var(--desktop); }
+.from-soren .msg-sender { color: var(--soren); }
+.from-atlas .msg-sender { color: var(--atlas); }
 .from-web .msg-sender { color: var(--web); }
+.from-ellison .msg-sender { color: var(--ellison); }
 
 .msg-time {
     font-size: 0.75rem;
@@ -127,7 +130,6 @@ header h1 {
 .msg-content {
     font-size: 0.9rem;
     line-height: 1.5;
-    white-space: pre-wrap;
     word-break: break-word;
 }
 
@@ -178,8 +180,8 @@ header h1 {
 }
 
 .sender-btn[data-sender="Rob"].active { border-color: var(--rob); color: var(--rob); }
-.sender-btn[data-sender="Code"].active { border-color: var(--code); color: var(--code); }
-.sender-btn[data-sender="Desktop"].active { border-color: var(--desktop); color: var(--desktop); }
+.sender-btn[data-sender="Soren"].active { border-color: var(--soren); color: var(--soren); }
+.sender-btn[data-sender="Atlas"].active { border-color: var(--atlas); color: var(--atlas); }
 .sender-btn[data-sender="Web"].active { border-color: var(--web); color: var(--web); }
 
 #compose {
@@ -187,8 +189,46 @@ header h1 {
     gap: 8px;
 }
 
-#message-input {
+#mention-wrapper {
     flex: 1;
+    position: relative;
+}
+
+#mention-wrapper #message-input {
+    width: 100%;
+}
+
+.mention-popup {
+    position: absolute;
+    bottom: 100%;
+    left: 0;
+    margin-bottom: 4px;
+    background: var(--surface);
+    border: 1px solid var(--surface-2);
+    border-radius: 6px;
+    overflow: hidden;
+    z-index: 10;
+    min-width: 140px;
+    box-shadow: 0 -4px 12px rgba(0,0,0,0.3);
+}
+
+.mention-popup.hidden { display: none; }
+
+.mention-option {
+    padding: 8px 14px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    color: var(--text);
+}
+
+.mention-option:hover,
+.mention-option.selected {
+    background: var(--surface-2);
+    color: var(--mention);
+    font-weight: 600;
+}
+
+#message-input {
     padding: 10px 14px;
     background: var(--bg);
     border: 1px solid var(--surface-2);
@@ -327,8 +367,64 @@ header h1 {
     animation: newMessageBlink 1.5s ease-out;
 }
 
+/* --- Rendered markdown in messages --- */
+.msg-content h3, .msg-content h4, .msg-content h5, .msg-content h6 {
+    font-size: 0.9rem;
+    font-weight: 700;
+    margin: 6px 0 2px;
+    color: var(--text);
+}
+.msg-content h3 { font-size: 0.95rem; }
+
+.msg-content pre {
+    background: var(--bg);
+    border: 1px solid var(--surface-2);
+    border-radius: 4px;
+    padding: 8px 10px;
+    overflow-x: auto;
+    margin: 4px 0;
+    font-size: 0.82rem;
+    line-height: 1.4;
+}
+
+.msg-content code {
+    background: var(--bg);
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-size: 0.84rem;
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+}
+
+.msg-content pre code {
+    background: none;
+    padding: 0;
+}
+
+.msg-content strong { color: #fff; }
+
+.msg-content .md-li {
+    padding-left: 16px;
+    position: relative;
+    margin: 1px 0;
+}
+
+.msg-content .md-li::before {
+    content: '\2022';
+    position: absolute;
+    left: 4px;
+    color: var(--text-dim);
+}
+
+.msg-content .md-li.md-ol::before {
+    content: '\2013';
+}
+
 /* --- Placeholder --- */
 #message-input::placeholder { color: var(--text-dim); }
+
+/* --- Presence indicator --- */
+.presence-on { color: var(--online); }
+.presence-off { color: var(--offline); }
 
 /* --- Flex fix for mobile scroll --- */
 #chat-container { min-height: 0; }

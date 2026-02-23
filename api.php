@@ -11,6 +11,8 @@
  * POST {action: "status", id, status, by}     → update message delivery status
  * POST {action: "set_status", participant, state} → set participant busy/idle
  * POST {action: "typing", participant}         → typing heartbeat
+ * POST {action: "heartbeat"}                   → Rob's presence heartbeat (tab focused)
+ * GET  ?action=presence                        → Rob's presence state
  * POST {action: "session", state}              → set session active/paused
  * POST {action: "summary", summary_text, covers_up_to} → store a summary
  */
@@ -81,9 +83,13 @@ function initDb(PDO $db): void {
         'exchange_cap' => '5',
         'last_rob_message_at' => '',
         'rob_typing_at' => '',
-        'participant_status_Code' => 'idle',
-        'participant_status_Desktop' => 'idle',
+        'participant_status_Soren' => 'idle',
+        'participant_status_Atlas' => 'idle',
         'participant_status_Web' => 'idle',
+        'participant_status_Ellison' => 'idle',
+        'rob_heartbeat_at' => '',
+        'rob_focused' => 'false',
+        'conversation_state' => 'active',
     ];
     $stmt = $db->prepare("INSERT OR IGNORE INTO session_state (key, value) VALUES (?, ?)");
     foreach ($defaults as $k => $v) {
@@ -158,7 +164,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
     // --- Pending (for trigger system) ---
     if ($action === 'pending') {
         $for = $_GET['for'] ?? '';
-        $validParticipants = ['Rob', 'Code', 'Desktop', 'Web'];
+        $validParticipants = ['Rob', 'Soren', 'Atlas', 'Web', 'Ellison'];
         if ($for === '' || !in_array($for, $validParticipants)) {
             http_response_code(400);
             echo json_encode(['ok' => false, 'error' => 'Missing or invalid "for" parameter']);
@@ -166,18 +172,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         }
 
         // Check session state for pause conditions (batched query)
-        $stateStmt = $db->query("SELECT key, value FROM session_state WHERE key IN ('exchange_counter', 'exchange_cap', 'session_active', 'rob_typing_at')");
+        $stateStmt = $db->query("SELECT key, value FROM session_state WHERE key IN ('session_active', 'rob_typing_at', 'rob_heartbeat_at')");
         $stateRows = $stateStmt->fetchAll();
         $stateMap = [];
         foreach ($stateRows as $row) $stateMap[$row['key']] = $row['value'];
 
-        $exchangeCounter = (int)($stateMap['exchange_counter'] ?? 0);
-        $exchangeCap = (int)($stateMap['exchange_cap'] ?? 5);
         $sessionActive = ($stateMap['session_active'] ?? 'false') === 'true';
         $robTypingAt = $stateMap['rob_typing_at'] ?? '';
         $robTypingTs = ($robTypingAt !== '') ? strtotime($robTypingAt) : false;
         $robTypingRecently = ($robTypingTs !== false) && (time() - $robTypingTs) < 10;
-        $paused = !$sessionActive || $exchangeCounter >= $exchangeCap || $robTypingRecently;
+
+        // Presence check: heartbeat within 5 minutes
+        $heartbeatAt = $stateMap['rob_heartbeat_at'] ?? '';
+        $robPresent = false;
+        if ($heartbeatAt !== '') {
+            $robPresent = (time() - strtotime($heartbeatAt)) < 300;
+        }
+        $paused = !$sessionActive || !$robPresent || $robTypingRecently;
 
         // Safe LIKE query — $for is validated against allowlist above
         $stmt = $db->prepare("SELECT * FROM messages WHERE mentions LIKE ? AND read_by NOT LIKE ? ORDER BY id ASC");
@@ -196,8 +207,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
             'count' => count($pending),
             'paused' => $paused,
             'session_active' => $sessionActive,
-            'exchange_counter' => $exchangeCounter,
-            'exchange_cap' => $exchangeCap,
+            'rob_present' => $robPresent,
             'rob_typing' => $robTypingRecently
         ]);
         exit;
@@ -262,12 +272,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         exit;
     }
 
+    // --- Presence (Rob's heartbeat state for watcher) ---
+    if ($action === 'presence') {
+        $heartbeatAt = getState($db, 'rob_heartbeat_at');
+        $focused = getState($db, 'rob_focused') === 'true';
+        $convState = getState($db, 'conversation_state');
+        $lastInteraction = getState($db, 'last_rob_message_at');
+        $robTypingAt = getState($db, 'rob_typing_at');
+
+        // Determine if Rob is "present" (heartbeat within 5 minutes)
+        $present = false;
+        if ($heartbeatAt !== '') {
+            $elapsed = time() - strtotime($heartbeatAt);
+            $present = $elapsed < 300; // 5 minutes
+        }
+
+        echo json_encode([
+            'ok' => true,
+            'present' => $present,
+            'focused' => $focused,
+            'heartbeat_at' => $heartbeatAt,
+            'last_interaction_at' => $lastInteraction,
+            'rob_typing_at' => $robTypingAt,
+            'conversation_state' => $convState
+        ]);
+        exit;
+    }
+
     // --- Participant status ---
     if ($action === 'status') {
         echo json_encode(['ok' => true, 'status' => [
-            'Code' => getState($db, 'participant_status_Code'),
-            'Desktop' => getState($db, 'participant_status_Desktop'),
+            'Soren' => getState($db, 'participant_status_Soren'),
+            'Atlas' => getState($db, 'participant_status_Atlas'),
             'Web' => getState($db, 'participant_status_Web'),
+            'Ellison' => getState($db, 'participant_status_Ellison'),
         ]]);
         exit;
     }
@@ -297,7 +335,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         }
 
-        $validFrom = ['Rob', 'Code', 'Desktop', 'Web', 'System'];
+        $validFrom = ['Rob', 'Soren', 'Atlas', 'Web', 'System', 'Ellison'];
         if (!in_array($from, $validFrom)) {
             http_response_code(400);
             echo json_encode(['ok' => false, 'error' => 'Invalid "from". Must be one of: ' . implode(', ', $validFrom)]);
@@ -305,7 +343,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         // Auto-detect @mentions
-        preg_match_all('/@(Rob|Code|Desktop|Web)\b/', $content, $matches);
+        preg_match_all('/@(Rob|Soren|Atlas|Web|Ellison)\b/', $content, $matches);
         $mentions = array_values(array_unique($input['mentions'] ?? $matches[1] ?? []));
 
         $tokenEst = estimateTokens($content);
@@ -394,7 +432,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($action === 'set_status') {
         $participant = $input['participant'] ?? '';
         $state = $input['state'] ?? '';
-        $validStatusParticipants = ['Code', 'Desktop', 'Web'];
+        $validStatusParticipants = ['Soren', 'Atlas', 'Web', 'Ellison'];
         if (!in_array($participant, $validStatusParticipants) || !in_array($state, ['busy', 'idle'])) {
             http_response_code(400);
             echo json_encode(['ok' => false, 'error' => 'Invalid participant or state']);
@@ -412,6 +450,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             setState($db, 'rob_typing_at', gmdate('Y-m-d\TH:i:s\Z'));
         }
         echo json_encode(['ok' => true]);
+        exit;
+    }
+
+    // --- Presence heartbeat (Rob's tab is focused) ---
+    if ($action === 'heartbeat') {
+        $focused = ($input['focused'] ?? false) ? 'true' : 'false';
+        setState($db, 'rob_heartbeat_at', gmdate('Y-m-d\TH:i:s\Z'));
+        setState($db, 'rob_focused', $focused);
+
+        // If Rob comes back after being away, resume conversation + session
+        $convState = getState($db, 'conversation_state');
+        if ($focused === 'true') {
+            if ($convState === 'paused') {
+                setState($db, 'conversation_state', 'active');
+            }
+            // Re-activate session if watcher paused it due to stale heartbeat
+            if (getState($db, 'session_active') !== 'true') {
+                setState($db, 'session_active', 'true');
+            }
+        }
+
+        echo json_encode(['ok' => true, 'conversation_state' => getState($db, 'conversation_state')]);
         exit;
     }
 

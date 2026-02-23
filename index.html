@@ -32,12 +32,15 @@
         <footer id="input-area">
             <div id="sender-select">
                 <button class="sender-btn active" data-sender="Rob">Rob</button>
-                <button class="sender-btn" data-sender="Code">Code</button>
-                <button class="sender-btn" data-sender="Desktop">Desktop</button>
+                <button class="sender-btn" data-sender="Soren">Soren</button>
+                <button class="sender-btn" data-sender="Atlas">Atlas</button>
                 <button class="sender-btn" data-sender="Web">Web</button>
             </div>
             <div id="compose">
-                <textarea id="message-input" placeholder="Type a message... Use @Code @Desktop @Web @Rob to mention." rows="3"></textarea>
+                <div id="mention-wrapper">
+                    <textarea id="message-input" placeholder="Type a message... Type @ to mention someone." rows="3"></textarea>
+                    <div id="mention-popup" class="mention-popup hidden"></div>
+                </div>
                 <button id="send-btn">Send</button>
             </div>
             <div id="participant-status"></div>
@@ -155,6 +158,100 @@
             }
         });
 
+        // --- @mention autocomplete ---
+        const mentionNames = ['Rob', 'Soren', 'Atlas', 'Web', 'Ellison'];
+        const mentionPopup = document.getElementById('mention-popup');
+        let mentionStart = -1; // cursor position of the '@'
+        let mentionSelected = 0;
+
+        function getMentionQuery() {
+            const pos = inputEl.selectionStart;
+            const text = inputEl.value.substring(0, pos);
+            const atIdx = text.lastIndexOf('@');
+            if (atIdx === -1) return null;
+            // '@' must be at start or after whitespace
+            if (atIdx > 0 && !/\s/.test(text[atIdx - 1])) return null;
+            const query = text.substring(atIdx + 1);
+            // No spaces allowed in mention query
+            if (/\s/.test(query)) return null;
+            return { start: atIdx, query };
+        }
+
+        function showMentionPopup(filtered) {
+            mentionPopup.innerHTML = '';
+            filtered.forEach((name, i) => {
+                const div = document.createElement('div');
+                div.className = 'mention-option' + (i === mentionSelected ? ' selected' : '');
+                div.textContent = '@' + name;
+                div.addEventListener('mousedown', (e) => {
+                    e.preventDefault();
+                    insertMention(name);
+                });
+                mentionPopup.appendChild(div);
+            });
+            mentionPopup.classList.remove('hidden');
+        }
+
+        function hideMentionPopup() {
+            mentionPopup.classList.add('hidden');
+            mentionStart = -1;
+            mentionSelected = 0;
+        }
+
+        function insertMention(name) {
+            const info = getMentionQuery();
+            if (!info) return;
+            const before = inputEl.value.substring(0, info.start);
+            const after = inputEl.value.substring(inputEl.selectionStart);
+            inputEl.value = before + '@' + name + ' ' + after;
+            const newPos = info.start + name.length + 2; // after "@Name "
+            inputEl.selectionStart = inputEl.selectionEnd = newPos;
+            hideMentionPopup();
+            inputEl.focus();
+        }
+
+        inputEl.addEventListener('input', () => {
+            const info = getMentionQuery();
+            if (info) {
+                const q = info.query.toLowerCase();
+                const filtered = mentionNames.filter(n => n.toLowerCase().startsWith(q));
+                if (filtered.length > 0) {
+                    mentionSelected = Math.min(mentionSelected, filtered.length - 1);
+                    showMentionPopup(filtered);
+                    return;
+                }
+            }
+            hideMentionPopup();
+        });
+
+        inputEl.addEventListener('keydown', (e) => {
+            if (mentionPopup.classList.contains('hidden')) return;
+            const options = mentionPopup.querySelectorAll('.mention-option');
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                mentionSelected = (mentionSelected + 1) % options.length;
+                options.forEach((o, i) => o.classList.toggle('selected', i === mentionSelected));
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                mentionSelected = (mentionSelected - 1 + options.length) % options.length;
+                options.forEach((o, i) => o.classList.toggle('selected', i === mentionSelected));
+            } else if (e.key === 'Enter' || e.key === 'Tab') {
+                if (options.length > 0) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const name = options[mentionSelected].textContent.slice(1); // remove '@'
+                    insertMention(name);
+                }
+            } else if (e.key === 'Escape') {
+                hideMentionPopup();
+            }
+        });
+
+        inputEl.addEventListener('blur', () => {
+            // Delay so mousedown on popup option fires first
+            setTimeout(hideMentionPopup, 150);
+        });
+
         // --- Send message ---
         async function sendMessage() {
             const content = inputEl.value.trim();
@@ -179,7 +276,7 @@
                 statusDot.className = 'status-dot offline';
             } finally {
                 sendBtn.disabled = false;
-                inputEl.focus();
+                inputEl.blur();
             }
         }
 
@@ -263,12 +360,17 @@
                 sessionToggle.textContent = active ? 'END SESSION' : 'STARTUP';
                 sessionToggle.className = 'control-btn ' + (active ? 'stop' : 'startup');
 
-                const counter = parseInt(s.exchange_counter || '0');
-                const cap = parseInt(s.exchange_cap || '5');
-                exchangeEl.textContent = active ? `Exchanges: ${counter}/${cap}` : '';
+                const robPresent = s.rob_focused === 'true';
+                const convState = s.conversation_state || 'active';
+                if (active) {
+                    exchangeEl.textContent = robPresent ? 'Rob: present' : `Rob: away (${convState})`;
+                    exchangeEl.className = robPresent ? 'presence-on' : 'presence-off';
+                } else {
+                    exchangeEl.textContent = '';
+                }
 
                 participantStatusEl.innerHTML = '';
-                ['Code', 'Desktop', 'Web'].forEach(p => {
+                ['Soren', 'Atlas', 'Web', 'Ellison'].forEach(p => {
                     const st = (s['participant_status_' + p] || 'idle').replace(/[^a-z]/g, '');
                     const span = document.createElement('span');
                     span.className = `p-status ${st}`;
@@ -284,22 +386,111 @@
         }
 
         function updateTypingIndicator(stateObj) {
-            const busyParticipants = [];
-            ['Code', 'Desktop', 'Web'].forEach(p => {
-                if ((stateObj['participant_status_' + p] || 'idle') === 'busy') busyParticipants.push(p);
+            const active = [];
+
+            // AI participants responding (status = busy)
+            ['Soren', 'Atlas', 'Web', 'Ellison'].forEach(p => {
+                if ((stateObj['participant_status_' + p] || 'idle') === 'busy') active.push({ name: p, verb: 'responding' });
             });
+
+            // Rob typing (recent keystroke within 5s)
+            const robTypingAt = stateObj.rob_typing_at;
+            if (robTypingAt) {
+                const elapsed = Date.now() - new Date(robTypingAt.replace(/Z+$/, '') + 'Z').getTime();
+                if (elapsed < 5000) active.push({ name: 'Rob', verb: 'typing' });
+            }
 
             const wasVisible = !typingIndicator.classList.contains('hidden');
 
-            if (busyParticipants.length > 0) {
-                const label = busyParticipants.join(' & ');
-                typingSender.textContent = label + (busyParticipants.length === 1 ? ' is' : ' are') + ' thinking';
+            if (active.length > 0) {
+                let label;
+                if (active.length === 1) {
+                    label = `${active[0].name} is ${active[0].verb}`;
+                } else {
+                    const names = active.map(a => a.name).join(' & ');
+                    label = `${names} are active`;
+                }
+                typingSender.textContent = label;
                 typingIndicator.classList.remove('hidden');
                 const nearBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 80;
                 if (!wasVisible && nearBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
             } else {
                 typingIndicator.classList.add('hidden');
             }
+        }
+
+        // --- Lightweight markdown renderer (no external deps) ---
+        function renderMarkdown(raw) {
+            const esc = escapeHtml(raw);
+            const lines = esc.split('\n');
+            const out = [];
+            let inCodeBlock = false;
+            let codeLines = [];
+            let codeLang = '';
+
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+
+                // Fenced code blocks
+                if (line.match(/^```/)) {
+                    if (inCodeBlock) {
+                        out.push(`<pre><code class="lang-${codeLang}">${codeLines.join('\n')}</code></pre>`);
+                        codeLines = [];
+                        codeLang = '';
+                        inCodeBlock = false;
+                    } else {
+                        inCodeBlock = true;
+                        codeLang = line.slice(3).trim();
+                    }
+                    continue;
+                }
+                if (inCodeBlock) { codeLines.push(line); continue; }
+
+                // Headers
+                if (line.match(/^#{1,4}\s/)) {
+                    const level = line.match(/^(#+)/)[1].length;
+                    const text = inlineFormat(line.replace(/^#+\s*/, ''));
+                    out.push(`<h${level + 2}>${text}</h${level + 2}>`);
+                    continue;
+                }
+
+                // Bullet lists (- or * or numbered)
+                if (line.match(/^\s*[-*]\s/)) {
+                    const text = inlineFormat(line.replace(/^\s*[-*]\s/, ''));
+                    out.push(`<div class="md-li">${text}</div>`);
+                    continue;
+                }
+                if (line.match(/^\s*\d+\.\s/)) {
+                    const text = inlineFormat(line.replace(/^\s*\d+\.\s/, ''));
+                    out.push(`<div class="md-li md-ol">${text}</div>`);
+                    continue;
+                }
+
+                // Blank line
+                if (line.trim() === '') { out.push('<br>'); continue; }
+
+                // Normal paragraph line
+                out.push(inlineFormat(line));
+                // Add <br> if next line is also a normal text line (not a block element)
+                if (i + 1 < lines.length && lines[i + 1].trim() !== '' && !lines[i + 1].match(/^(```|#{1,4}\s|\s*[-*]\s|\s*\d+\.\s)/)) {
+                    out.push('<br>');
+                }
+            }
+
+            // Unclosed code block
+            if (inCodeBlock) {
+                out.push(`<pre><code>${codeLines.join('\n')}</code></pre>`);
+            }
+
+            return out.join('\n');
+        }
+
+        function inlineFormat(text) {
+            return text
+                .replace(/`([^`]+)`/g, '<code>$1</code>')           // inline code
+                .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')    // bold
+                .replace(/\*(.+?)\*/g, '<em>$1</em>')                // italic
+                .replace(/@(Rob|Soren|Atlas|Web|Ellison)/g, '<span class="mention">@$1</span>');
         }
 
         function renderMessage(msg) {
@@ -311,9 +502,7 @@
             const dt = parseTimestamp(msg.timestamp);
             const time = dt ? dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
 
-            const contentHtml = escapeHtml(msg.content)
-                .replace(/@(Rob|Code|Desktop|Web)/g, '<span class="mention">@$1</span>')
-                .replace(/\n/g, '<br>');
+            const contentHtml = renderMarkdown(msg.content);
 
             const statusIcon = msg.status === 'read' ? '&#10003;&#10003;' : msg.status === 'delivered' ? '&#10003;' : '&#9675;';
 
@@ -363,6 +552,38 @@
                 document.title = originalTitle;
             }, { once: true });
         }
+
+        // --- Presence heartbeat (sends every 10s while tab is focused) ---
+        let heartbeatTimer = null;
+
+        function sendHeartbeat() {
+            fetch(API, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'heartbeat', focused: document.hasFocus() })
+            }).catch(() => {});
+        }
+
+        function startHeartbeat() {
+            if (heartbeatTimer) return;
+            sendHeartbeat(); // send immediately
+            heartbeatTimer = setInterval(sendHeartbeat, 10000);
+        }
+
+        function stopHeartbeat() {
+            // Send one last "unfocused" heartbeat, then stop
+            fetch(API, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'heartbeat', focused: false })
+            }).catch(() => {});
+            if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+        }
+
+        // Start/stop based on tab focus
+        if (document.hasFocus()) startHeartbeat();
+        window.addEventListener('focus', startHeartbeat);
+        window.addEventListener('blur', stopHeartbeat);
 
         // --- Polling (with overlap guard + visibility catch-up + auto-start) ---
         async function startPolling(intervalMs = 3000) {
