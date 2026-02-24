@@ -9,7 +9,15 @@
 <body>
     <div id="app">
         <header>
-            <h1>Claude Collab</h1>
+            <div id="header-left">
+                <h1>Claude Collab</h1>
+                <div id="session-selector">
+                    <select id="session-dropdown">
+                        <option value="current">Current Session</option>
+                        <option value="all">All Messages</option>
+                    </select>
+                </div>
+            </div>
             <div id="status-bar">
                 <span id="connection-status" class="status-dot online"></span>
                 <span id="session-badge" class="badge paused">SESSION OFF</span>
@@ -20,6 +28,12 @@
                 <button id="session-toggle" class="control-btn startup">STARTUP</button>
             </div>
         </header>
+
+        <div id="search-bar" class="hidden">
+            <input type="text" id="search-input" placeholder="Search messages..." />
+            <span id="search-count"></span>
+            <button id="search-close">&times;</button>
+        </div>
 
         <main id="chat-container">
             <div id="messages"></div>
@@ -35,6 +49,8 @@
                 <button class="sender-btn" data-sender="Soren">Soren</button>
                 <button class="sender-btn" data-sender="Atlas">Atlas</button>
                 <button class="sender-btn" data-sender="Web">Web</button>
+                <button class="sender-btn guest-btn" data-sender="Guest">Guest</button>
+                <input type="text" id="guest-handle" class="hidden" placeholder="Handle..." maxlength="20" />
             </div>
             <div id="compose">
                 <div id="mention-wrapper">
@@ -56,6 +72,7 @@
         let flashInterval = null;
         let typingTimer = null;
         const originalTitle = document.title;
+        let currentSessionFilter = 'current'; // 'current', 'all', or session ID
 
         // --- DOM refs ---
         const messagesEl = document.getElementById('messages');
@@ -69,6 +86,11 @@
         const participantStatusEl = document.getElementById('participant-status');
         const typingIndicator = document.getElementById('typing-indicator');
         const typingSender = typingIndicator.querySelector('.typing-sender');
+        const sessionDropdown = document.getElementById('session-dropdown');
+        const searchBar = document.getElementById('search-bar');
+        const searchInput = document.getElementById('search-input');
+        const searchCount = document.getElementById('search-count');
+        const searchClose = document.getElementById('search-close');
         let sessionActive = false;
         const senderBtns = document.querySelectorAll('.sender-btn');
 
@@ -114,18 +136,65 @@
         }
 
         // --- Sender selection ---
+        const guestHandleInput = document.getElementById('guest-handle');
+        let guestMode = false;
+
+        function exitGuestMode() {
+            guestMode = false;
+            guestHandleInput.classList.add('hidden');
+            guestHandleInput.value = '';
+            document.querySelector('.guest-btn').textContent = 'Guest';
+        }
+
         senderBtns.forEach(btn => {
             btn.addEventListener('click', () => {
-                senderBtns.forEach(b => b.classList.remove('active'));
-                btn.classList.add('active');
-                currentSender = btn.dataset.sender;
+                if (btn.dataset.sender === 'Guest') {
+                    if (guestMode) {
+                        // Toggle off — back to Rob
+                        exitGuestMode();
+                        senderBtns.forEach(b => b.classList.remove('active'));
+                        document.querySelector('[data-sender="Rob"]').classList.add('active');
+                        currentSender = 'Rob';
+                    } else {
+                        // Enter guest mode
+                        guestMode = true;
+                        senderBtns.forEach(b => b.classList.remove('active'));
+                        btn.classList.add('active');
+                        btn.textContent = 'Exit Guest';
+                        guestHandleInput.classList.remove('hidden');
+                        guestHandleInput.focus();
+                        currentSender = 'Guest';
+                    }
+                } else {
+                    if (guestMode) exitGuestMode();
+                    senderBtns.forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    currentSender = btn.dataset.sender;
+                }
                 inputEl.focus();
             });
         });
 
-        // --- Session toggle ---
+        guestHandleInput.addEventListener('input', () => {
+            const handle = guestHandleInput.value.trim();
+            currentSender = handle ? `${handle} [Guest]` : 'Guest';
+        });
+
+        guestHandleInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); inputEl.focus(); }
+            if (e.key === 'Escape') {
+                exitGuestMode();
+                senderBtns.forEach(b => b.classList.remove('active'));
+                document.querySelector('[data-sender="Rob"]').classList.add('active');
+                currentSender = 'Rob';
+                inputEl.focus();
+            }
+        });
+
+        // --- Session toggle (with confirmation for ending) ---
         sessionToggle.addEventListener('click', async () => {
             const newState = sessionActive ? 'paused' : 'active';
+            if (sessionActive && !confirm('End the current session? This will close the session and pause all AI participants.')) return;
             const msg = sessionActive ? 'Session stopped by Rob.' : 'Session started by Rob.';
             try {
                 await fetch(API, {
@@ -141,6 +210,52 @@
                 fetchState();
                 fetchMessages();
             } catch (e) { console.error('Session toggle failed:', e); }
+        });
+
+        // --- Session selector ---
+        sessionDropdown.addEventListener('change', async () => {
+            currentSessionFilter = sessionDropdown.value;
+            // Reload all messages for the selected session
+            messagesEl.innerHTML = '';
+            lastMessageId = 0;
+            await fetchMessages();
+        });
+
+        // --- Search (Ctrl+F override for in-chat search) ---
+        document.addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+                e.preventDefault();
+                searchBar.classList.remove('hidden');
+                searchInput.focus();
+                searchInput.select();
+            }
+        });
+
+        searchInput.addEventListener('input', () => {
+            const q = searchInput.value.toLowerCase().trim();
+            const msgs = messagesEl.querySelectorAll('.message');
+            let matchCount = 0;
+            msgs.forEach(el => {
+                const text = el.textContent.toLowerCase();
+                if (q === '' || text.includes(q)) {
+                    el.style.display = '';
+                    if (q !== '') matchCount++;
+                } else {
+                    el.style.display = 'none';
+                }
+            });
+            searchCount.textContent = q ? `${matchCount} match${matchCount !== 1 ? 'es' : ''}` : '';
+        });
+
+        searchClose.addEventListener('click', () => {
+            searchBar.classList.add('hidden');
+            searchInput.value = '';
+            messagesEl.querySelectorAll('.message').forEach(el => el.style.display = '');
+            searchCount.textContent = '';
+        });
+
+        searchInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') searchClose.click();
         });
 
         // --- Typing indicator (Rob priority enforcement, throttled to 1 POST per 3s) ---
@@ -300,7 +415,10 @@
         // --- Fetch & render messages ---
         async function fetchMessages() {
             try {
-                const res = await fetch(`${API}?action=messages&since=${lastMessageId}`, {cache: 'no-store'});
+                let url = `${API}?action=messages&since=${lastMessageId}`;
+                if (currentSessionFilter === 'current') url += '&session=current';
+                else if (currentSessionFilter !== 'all') url += `&session=${currentSessionFilter}`;
+                const res = await fetch(url, {cache: 'no-store'});
                 const data = await res.json();
                 // Status dot reflects connection health, not session state (fetchState handles session)
                 if (data.ok) statusDot.className = 'status-dot online';
@@ -496,7 +614,10 @@
         function renderMessage(msg) {
             const div = document.createElement('div');
             const sender = (msg.participant && msg.participant !== '') ? msg.participant : (msg.from || 'Unknown');
-            div.className = `message from-${sender.toLowerCase().replace(/[^a-z0-9]/g, '-')}`;
+            const knownSenders = ['rob', 'soren', 'atlas', 'web', 'system', 'ellison'];
+            const senderKey = sender.toLowerCase().replace(/[^a-z0-9]/g, '-');
+            const senderClass = knownSenders.includes(senderKey) ? `from-${senderKey}` : 'from-guest';
+            div.className = `message ${senderClass}`;
             div.dataset.id = msg.id;
 
             const dt = parseTimestamp(msg.timestamp);
@@ -604,6 +725,38 @@
         window.addEventListener('focus', startHeartbeat);
         window.addEventListener('blur', stopHeartbeat);
 
+        // --- Populate session dropdown ---
+        async function loadSessionList() {
+            try {
+                const res = await fetch(`${API}?action=sessions`, {cache: 'no-store'});
+                const data = await res.json();
+                if (!data.ok) return;
+                const sessions = data.sessions || [];
+                const currentId = data.current_session_id;
+                // Preserve selection
+                const prev = sessionDropdown.value;
+                sessionDropdown.innerHTML = '';
+                const optCurrent = document.createElement('option');
+                optCurrent.value = 'current';
+                optCurrent.textContent = currentId ? `Current Session (#${currentId})` : 'Current Session';
+                sessionDropdown.appendChild(optCurrent);
+                const optAll = document.createElement('option');
+                optAll.value = 'all';
+                optAll.textContent = 'All Messages';
+                sessionDropdown.appendChild(optAll);
+                sessions.forEach(s => {
+                    if (s.id == currentId) return; // skip, already shown as "current"
+                    const opt = document.createElement('option');
+                    opt.value = s.id;
+                    const date = new Date(s.started_at).toLocaleDateString([], { month: 'short', day: 'numeric' });
+                    const time = new Date(s.started_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                    opt.textContent = `Session #${s.id} (${date} ${time}) — ${s.message_count} msgs`;
+                    sessionDropdown.appendChild(opt);
+                });
+                sessionDropdown.value = prev;
+            } catch (e) { /* Session list fetch failed, non-critical */ }
+        }
+
         // --- Polling (with overlap guard + visibility catch-up + auto-start) ---
         async function startPolling(intervalMs = 2000) {
             await fetchMessages();
@@ -626,6 +779,10 @@
                     await fetchMessages();
                 } catch (e) { console.error('Auto-start failed:', e); }
             }
+
+            // Load session list once on start, then every 30s
+            loadSessionList();
+            setInterval(loadSessionList, 30000);
 
             setInterval(async () => {
                 if (isPolling) return;

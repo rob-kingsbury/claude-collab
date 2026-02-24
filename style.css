@@ -42,6 +42,14 @@ header {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+#header-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
 }
 
 header h1 {
@@ -419,30 +427,7 @@ header h1 {
     content: '\2013';
 }
 
-/* --- Tool approval buttons --- */
-.tool-approval-buttons {
-    margin-top: 8px;
-    display: flex;
-    gap: 8px;
-}
-.approve-btn, .deny-btn {
-    padding: 6px 16px;
-    border: none;
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: 0.85rem;
-    font-weight: 600;
-    transition: opacity 0.2s;
-}
-.approve-btn {
-    background: var(--online);
-    color: #fff;
-}
-.deny-btn {
-    background: var(--offline);
-    color: #fff;
-}
-.approve-btn:hover, .deny-btn:hover { opacity: 0.85; }
+/* --- Tool approval status (after button click) --- */
 .tool-approval-status {
     font-size: 0.85rem;
     font-weight: 600;
@@ -460,7 +445,135 @@ header h1 {
 /* --- Flex fix for mobile scroll --- */
 #chat-container { min-height: 0; }
 
+/* --- Session selector dropdown --- */
+#session-selector select {
+    background: var(--bg);
+    color: var(--text-dim);
+    border: 1px solid var(--surface-2);
+    border-radius: 4px;
+    padding: 3px 8px;
+    font-size: 0.75rem;
+    font-family: inherit;
+    cursor: pointer;
+    outline: none;
+}
+#session-selector select:focus { border-color: var(--accent); }
+
+/* --- Search bar --- */
+#search-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 20px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--surface-2);
+}
+#search-bar.hidden { display: none; }
+#search-input {
+    flex: 1;
+    padding: 5px 10px;
+    background: var(--bg);
+    border: 1px solid var(--surface-2);
+    border-radius: 4px;
+    color: var(--text);
+    font-size: 0.85rem;
+    font-family: inherit;
+    outline: none;
+}
+#search-input:focus { border-color: var(--accent); }
+#search-count {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    white-space: nowrap;
+}
+#search-close {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-size: 1.2rem;
+    cursor: pointer;
+    padding: 0 4px;
+}
+#search-close:hover { color: var(--text); }
+
+/* --- Guest handle input --- */
+#guest-handle {
+    padding: 4px 10px;
+    background: var(--bg);
+    border: 1px solid var(--surface-2);
+    border-radius: 16px;
+    color: var(--text);
+    font-size: 0.8rem;
+    font-family: inherit;
+    width: 120px;
+    outline: none;
+}
+#guest-handle:focus { border-color: var(--accent); }
+#guest-handle.hidden { display: none; }
+.guest-btn { border-style: dashed !important; }
+
+/* --- Guest message styling --- */
+.message.from-guest { border-left-color: var(--text-dim); border-left-style: dashed; }
+.from-guest .msg-sender { color: var(--text-dim); }
+
+/* --- Tool approval buttons (improved visibility) --- */
+.tool-approval-buttons {
+    margin-top: 8px;
+    display: flex;
+    gap: 8px;
+}
+.approve-btn, .deny-btn {
+    padding: 8px 20px;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    transition: all 0.15s;
+}
+.approve-btn {
+    background: var(--online);
+    color: #fff;
+    box-shadow: 0 0 8px rgba(76, 175, 80, 0.3);
+}
+.deny-btn {
+    background: var(--offline);
+    color: #fff;
+    box-shadow: 0 0 8px rgba(244, 67, 54, 0.3);
+}
+.approve-btn:hover { opacity: 0.85; box-shadow: 0 0 12px rgba(76, 175, 80, 0.5); }
+.deny-btn:hover { opacity: 0.85; box-shadow: 0 0 12px rgba(244, 67, 54, 0.5); }
+
 /* --- Scrollbar --- */
 #messages::-webkit-scrollbar { width: 6px; }
 #messages::-webkit-scrollbar-track { background: transparent; }
 #messages::-webkit-scrollbar-thumb { background: var(--surface-2); border-radius: 3px; }
+
+/* --- Mobile responsive --- */
+@media (max-width: 640px) {
+    header {
+        padding: 8px 12px;
+    }
+    header h1 { font-size: 1rem; }
+    #status-bar { gap: 6px; font-size: 0.7rem; }
+    #session-selector select { font-size: 0.7rem; }
+    .control-btn { padding: 4px 10px; font-size: 0.7rem; }
+    .badge { font-size: 0.65rem; padding: 2px 6px; }
+    #messages { padding: 10px 12px; gap: 6px; }
+    .message { padding: 8px 10px; }
+    .msg-sender { font-size: 0.8rem; }
+    .msg-content { font-size: 0.85rem; }
+    .msg-time { font-size: 0.7rem; }
+    #input-area { padding: 8px 12px; }
+    #sender-select { gap: 4px; flex-wrap: wrap; }
+    .sender-btn { padding: 3px 10px; font-size: 0.75rem; }
+    #guest-handle { width: 90px; font-size: 0.75rem; }
+    #message-input { font-size: 0.85rem; padding: 8px 10px; }
+    #send-btn { padding: 8px 16px; font-size: 0.85rem; }
+    #participant-status { gap: 6px; flex-wrap: wrap; }
+    .p-status { font-size: 0.65rem; }
+    #search-bar { padding: 4px 12px; }
+    #search-input { font-size: 0.8rem; }
+}

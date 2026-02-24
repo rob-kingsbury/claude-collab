@@ -445,10 +445,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         }
 
-        $validFrom = ['Rob', 'Soren', 'Atlas', 'Web', 'System', 'Ellison'];
-        if (!in_array($from, $validFrom)) {
+        $knownParticipants = ['Rob', 'Soren', 'Atlas', 'Web', 'System', 'Ellison'];
+        // Allow known participants or guest handles (alphanumeric + spaces, 1-20 chars)
+        $isKnown = in_array($from, $knownParticipants);
+        $isValidGuest = !$isKnown && preg_match('/^[a-zA-Z0-9 _\-\[\]]{1,30}$/', $from);
+        if (!$isKnown && !$isValidGuest) {
             http_response_code(400);
-            echo json_encode(['ok' => false, 'error' => 'Invalid "from". Must be one of: ' . implode(', ', $validFrom)]);
+            echo json_encode(['ok' => false, 'error' => 'Invalid "from". Use a known participant or a guest handle (1-20 alphanumeric chars).']);
             exit;
         }
 
