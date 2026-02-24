@@ -419,6 +419,37 @@ header h1 {
     content: '\2013';
 }
 
+/* --- Tool approval buttons --- */
+.tool-approval-buttons {
+    margin-top: 8px;
+    display: flex;
+    gap: 8px;
+}
+.approve-btn, .deny-btn {
+    padding: 6px 16px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    font-weight: 600;
+    transition: opacity 0.2s;
+}
+.approve-btn {
+    background: var(--online);
+    color: #fff;
+}
+.deny-btn {
+    background: var(--offline);
+    color: #fff;
+}
+.approve-btn:hover, .deny-btn:hover { opacity: 0.85; }
+.tool-approval-status {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-dim);
+    font-style: italic;
+}
+
 /* --- Placeholder --- */
 #message-input::placeholder { color: var(--text-dim); }
 

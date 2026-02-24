@@ -131,7 +131,7 @@
                 await fetch(API, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ action: 'session', state: newState })
+                    body: JSON.stringify({ action: 'session', state: newState, close_session: newState === 'paused' })
                 });
                 await fetch(API, {
                     method: 'POST',
@@ -511,6 +511,9 @@
                 ? msg.mentions.map(m => '@' + escapeHtml(m)).join(', ')
                 : '';
 
+            // Check if this is a tool approval request from System
+            const isToolApproval = sender === 'System' && msg.content.includes('Tool access requested');
+
             div.innerHTML = `
                 <div class="msg-header">
                     <span class="msg-sender">${escapeHtml(sender)}</span>
@@ -519,6 +522,10 @@
                 </div>
                 <div class="msg-content">${contentHtml}</div>
                 ${safeMentions ? `<div class="msg-mentions">&rarr; ${safeMentions}</div>` : ''}
+                ${isToolApproval ? `<div class="tool-approval-buttons">
+                    <button class="approve-btn" onclick="sendToolApproval('approve', this)">Approve</button>
+                    <button class="deny-btn" onclick="sendToolApproval('deny', this)">Deny</button>
+                </div>` : ''}
             `;
 
             messagesEl.appendChild(div);
@@ -528,6 +535,18 @@
             const d = document.createElement('div');
             d.textContent = str;
             return d.innerHTML;
+        }
+
+        async function sendToolApproval(decision, btn) {
+            const container = btn.parentElement;
+            container.innerHTML = `<span class="tool-approval-status">${decision === 'approve' ? 'Approved' : 'Denied'}</span>`;
+            try {
+                await fetch(API, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ from: 'Rob', content: decision })
+                });
+            } catch (e) { console.error('Tool approval failed:', e); }
         }
 
         let flashTimeout = null;

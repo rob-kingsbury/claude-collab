@@ -2,7 +2,7 @@
 /**
  * Claude Collab Chatroom API — SQLite Backend
  *
- * GET  ?action=messages[&since=ID][&limit=N]  → return messages
+ * GET  ?action=messages[&since=ID][&limit=N][&session=current|ID]  → return messages
  * GET  ?action=pending&for=<name>             → unread messages mentioning participant
  * GET  ?action=history&mode=full|since&since=N → summary + recent messages (for AI context)
  * GET  ?action=state                          → session state (active, typing, exchange count)
@@ -15,6 +15,7 @@
  * GET  ?action=presence                        → Rob's presence state
  * POST {action: "session", state}              → set session active/paused
  * POST {action: "summary", summary_text, covers_up_to} → store a summary
+ * GET  ?action=sessions                              → list all sessions with message counts
  */
 
 header('Content-Type: application/json');
@@ -55,7 +56,15 @@ function initDb(PDO $db): void {
             status TEXT DEFAULT 'pending',
             read_by TEXT DEFAULT '[]',
             timestamp TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-            token_estimate INTEGER DEFAULT 0
+            token_estimate INTEGER DEFAULT 0,
+            session_id INTEGER DEFAULT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            started_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            ended_at TEXT DEFAULT NULL,
+            title TEXT DEFAULT NULL
         );
 
         CREATE TABLE IF NOT EXISTS summaries (
@@ -74,6 +83,7 @@ function initDb(PDO $db): void {
 
         CREATE INDEX IF NOT EXISTS idx_messages_participant ON messages(participant);
         CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
     ");
 
     // Initialize session state defaults
@@ -90,6 +100,7 @@ function initDb(PDO $db): void {
         'rob_heartbeat_at' => '',
         'rob_focused' => 'false',
         'conversation_state' => 'active',
+        'current_session_id' => '',
     ];
     $stmt = $db->prepare("INSERT OR IGNORE INTO session_state (key, value) VALUES (?, ?)");
     foreach ($defaults as $k => $v) {
@@ -114,26 +125,107 @@ function estimateTokens(string $text): int {
     return (int)ceil(strlen($text) / 4);
 }
 
+// --- Migration for existing databases ---
+function migrateDb(PDO $db): void {
+    // Add sessions table if missing
+    $db->exec("
+        CREATE TABLE IF NOT EXISTS sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            started_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            ended_at TEXT DEFAULT NULL,
+            title TEXT DEFAULT NULL
+        );
+    ");
+
+    // Add session_id column to messages if missing
+    $cols = $db->query("PRAGMA table_info(messages)")->fetchAll();
+    $colNames = array_column($cols, 'name');
+    if (!in_array('session_id', $colNames)) {
+        $db->exec("ALTER TABLE messages ADD COLUMN session_id INTEGER DEFAULT NULL");
+    }
+
+    // Index after column exists
+    $db->exec("CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id)");
+
+    // Add current_session_id to session_state if missing
+    $stmt = $db->prepare("INSERT OR IGNORE INTO session_state (key, value) VALUES (?, ?)");
+    $stmt->execute(['current_session_id', '']);
+}
+
+// Get current session ID (or null if none active)
+function getCurrentSessionId(PDO $db): ?int {
+    $val = getState($db, 'current_session_id');
+    return $val !== '' ? (int)$val : null;
+}
+
+// Create a new session, close any dangling ones first
+function startSession(PDO $db): int {
+    // Close zombie sessions (ended_at IS NULL)
+    $zombies = $db->query("SELECT id FROM sessions WHERE ended_at IS NULL")->fetchAll();
+    foreach ($zombies as $z) {
+        // Set ended_at to the last message timestamp in that session
+        $lastMsg = $db->prepare("SELECT timestamp FROM messages WHERE session_id = ? ORDER BY id DESC LIMIT 1");
+        $lastMsg->execute([$z['id']]);
+        $last = $lastMsg->fetch();
+        $endTime = $last ? $last['timestamp'] : gmdate('Y-m-d\TH:i:s\Z');
+        $db->prepare("UPDATE sessions SET ended_at = ? WHERE id = ?")->execute([$endTime, $z['id']]);
+    }
+
+    // Create new session
+    $db->exec("INSERT INTO sessions (started_at) VALUES (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))");
+    $sessionId = (int)$db->lastInsertId();
+    setState($db, 'current_session_id', (string)$sessionId);
+    return $sessionId;
+}
+
+// Close the current session
+function endSession(PDO $db): void {
+    $sessionId = getCurrentSessionId($db);
+    if ($sessionId !== null) {
+        $db->prepare("UPDATE sessions SET ended_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?")->execute([$sessionId]);
+        setState($db, 'current_session_id', '');
+    }
+}
+
 // Watcher runs as a standalone process in Rob's user session.
 // PHP only toggles session_active — watcher sees the flag on next poll.
 
 $db = getDb($DB_PATH);
+migrateDb($db);
 
 // --- GET ---
 if ($_SERVER['REQUEST_METHOD'] === 'GET') {
     $action = $_GET['action'] ?? 'messages';
 
-    // --- Messages (with optional since/limit) ---
+    // --- Messages (with optional since/limit/session) ---
     if ($action === 'messages') {
         $since = (int)($_GET['since'] ?? 0);
         $limit = (int)($_GET['limit'] ?? 0);
+        $session = $_GET['session'] ?? '';
 
         $sql = "SELECT * FROM messages";
         $params = [];
+        $conditions = [];
 
         if ($since > 0) {
-            $sql .= " WHERE id > ?";
+            $conditions[] = "id > ?";
             $params[] = $since;
+        }
+
+        // Session filtering: 'current' = current session, numeric = specific session ID
+        if ($session === 'current') {
+            $currentId = getCurrentSessionId($db);
+            if ($currentId !== null) {
+                $conditions[] = "session_id = ?";
+                $params[] = $currentId;
+            }
+        } elseif ($session !== '' && is_numeric($session)) {
+            $conditions[] = "session_id = ?";
+            $params[] = (int)$session;
+        }
+
+        if (count($conditions) > 0) {
+            $sql .= " WHERE " . implode(" AND ", $conditions);
         }
 
         $sql .= " ORDER BY id ASC";
@@ -157,7 +249,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         $countStmt = $db->query("SELECT COUNT(*) as cnt FROM messages");
         $total = $countStmt->fetch()['cnt'];
 
-        echo json_encode(['ok' => true, 'messages' => $messages, 'count' => count($messages), 'total' => (int)$total]);
+        echo json_encode([
+            'ok' => true,
+            'messages' => $messages,
+            'count' => count($messages),
+            'total' => (int)$total,
+            'session_id' => getCurrentSessionId($db)
+        ]);
         exit;
     }
 
@@ -299,6 +397,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         exit;
     }
 
+    // --- Sessions list ---
+    if ($action === 'sessions') {
+        $stmt = $db->query("SELECT s.*, (SELECT COUNT(*) FROM messages WHERE session_id = s.id) as message_count FROM sessions s ORDER BY s.id DESC");
+        $sessions = $stmt->fetchAll();
+        echo json_encode([
+            'ok' => true,
+            'sessions' => $sessions,
+            'current_session_id' => getCurrentSessionId($db)
+        ]);
+        exit;
+    }
+
     // --- Participant status ---
     if ($action === 'status') {
         echo json_encode(['ok' => true, 'status' => [
@@ -357,9 +467,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $mentions = array_values(array_unique($expanded));
 
         $tokenEst = estimateTokens($content);
+        $sessionId = getCurrentSessionId($db);
 
-        $stmt = $db->prepare("INSERT INTO messages (participant, content, mentions, read_by, token_estimate) VALUES (?, ?, ?, ?, ?)");
-        $stmt->execute([$from, $content, json_encode($mentions), json_encode([$from]), $tokenEst]);
+        $stmt = $db->prepare("INSERT INTO messages (participant, content, mentions, read_by, token_estimate, session_id) VALUES (?, ?, ?, ?, ?, ?)");
+        $stmt->execute([$from, $content, json_encode($mentions), json_encode([$from]), $tokenEst, $sessionId]);
         $id = (int)$db->lastInsertId();
 
         // Update exchange counter
@@ -496,8 +607,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         setState($db, 'session_active', $state === 'active' ? 'true' : 'false');
         if ($state === 'active') {
             setState($db, 'exchange_counter', '0');
+            // Create a new session row if none is active
+            if (getCurrentSessionId($db) === null) {
+                $sessionId = startSession($db);
+            }
+        } else {
+            // Only close the session row if explicitly requested (End Session button).
+            // Watcher heartbeat pauses don't close sessions — they're temporary.
+            $closeSession = !empty($input['close_session']);
+            if ($closeSession) {
+                endSession($db);
+            }
         }
-        echo json_encode(['ok' => true, 'session_active' => $state === 'active']);
+        echo json_encode([
+            'ok' => true,
+            'session_active' => $state === 'active',
+            'session_id' => getCurrentSessionId($db)
+        ]);
         exit;
     }
 
