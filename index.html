@@ -11,20 +11,17 @@
         <header>
             <div id="header-left">
                 <h1>Claude Collab</h1>
-                <div id="session-selector">
-                    <select id="session-dropdown">
-                        <option value="current">Current Session</option>
-                        <option value="all">All Messages</option>
-                    </select>
-                </div>
+                <button id="history-toggle" class="history-btn" title="Toggle between current session and all messages">This session</button>
             </div>
             <div id="status-bar">
                 <span id="connection-status" class="status-dot online"></span>
                 <span id="session-badge" class="badge paused">SESSION OFF</span>
                 <span id="message-count">0 messages</span>
                 <span id="exchange-count"></span>
+                <span id="watcher-status" class="watcher-badge stopped" title="Watcher process status">W: stopped</span>
             </div>
             <div id="session-controls">
+                <button id="watcher-btn" class="control-btn watcher-ctl" title="Start/restart watcher">W</button>
                 <button id="session-toggle" class="control-btn startup">STARTUP</button>
             </div>
         </header>
@@ -86,7 +83,9 @@
         const participantStatusEl = document.getElementById('participant-status');
         const typingIndicator = document.getElementById('typing-indicator');
         const typingSender = typingIndicator.querySelector('.typing-sender');
-        const sessionDropdown = document.getElementById('session-dropdown');
+        const historyToggle = document.getElementById('history-toggle');
+        const watcherStatus = document.getElementById('watcher-status');
+        const watcherBtn = document.getElementById('watcher-btn');
         const searchBar = document.getElementById('search-bar');
         const searchInput = document.getElementById('search-input');
         const searchCount = document.getElementById('search-count');
@@ -212,13 +211,27 @@
             } catch (e) { console.error('Session toggle failed:', e); }
         });
 
-        // --- Session selector ---
-        sessionDropdown.addEventListener('change', async () => {
-            currentSessionFilter = sessionDropdown.value;
-            // Reload all messages for the selected session
+        // --- History toggle (this session / all) ---
+        historyToggle.addEventListener('click', async () => {
+            currentSessionFilter = currentSessionFilter === 'current' ? 'all' : 'current';
+            historyToggle.textContent = currentSessionFilter === 'current' ? 'This session' : 'All history';
+            historyToggle.classList.toggle('showing-all', currentSessionFilter === 'all');
             messagesEl.innerHTML = '';
             lastMessageId = 0;
             await fetchMessages();
+        });
+
+        // --- Watcher controls ---
+        watcherBtn.addEventListener('click', async () => {
+            const action = watcherBtn.dataset.running === 'true' ? 'restart' : 'start';
+            try {
+                await fetch(API, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: 'watcher_control', command: action })
+                });
+                watcherStatus.textContent = 'W: starting...';
+            } catch (e) { console.error('Watcher control failed:', e); }
         });
 
         // --- Search (Ctrl+F override for in-chat search) ---
@@ -496,6 +509,19 @@
                     participantStatusEl.appendChild(span);
                 });
 
+                // Watcher status
+                const watcherHb = s.watcher_heartbeat_at;
+                let watcherAlive = false;
+                if (watcherHb) {
+                    const elapsed = Date.now() - new Date(watcherHb.replace(/Z+$/, '') + 'Z').getTime();
+                    watcherAlive = elapsed < 15000; // alive if heartbeat within 15s
+                }
+                watcherStatus.textContent = watcherAlive ? `W: running` : 'W: stopped';
+                watcherStatus.className = `watcher-badge ${watcherAlive ? 'running' : 'stopped'}`;
+                watcherBtn.textContent = watcherAlive ? 'W restart' : 'W start';
+                watcherBtn.dataset.running = watcherAlive ? 'true' : 'false';
+                watcherBtn.className = `control-btn watcher-ctl ${watcherAlive ? 'running' : ''}`;
+
                 updateTypingIndicator(s);
 
             } catch (e) {
@@ -625,9 +651,6 @@
 
             const contentHtml = renderMarkdown(msg.content);
 
-            const statusIcon = msg.status === 'read' ? '&#10003;&#10003;' : msg.status === 'delivered' ? '&#10003;' : '&#9675;';
-
-            const safeStatus = escapeHtml(msg.status || 'pending');
             const safeMentions = (msg.mentions && msg.mentions.length > 0)
                 ? msg.mentions.map(m => '@' + escapeHtml(m)).join(', ')
                 : '';
@@ -639,7 +662,6 @@
                 <div class="msg-header">
                     <span class="msg-sender">${escapeHtml(sender)}</span>
                     <span class="msg-time">${time}</span>
-                    <span class="msg-status" title="${safeStatus}">${statusIcon}</span>
                 </div>
                 <div class="msg-content">${contentHtml}</div>
                 ${safeMentions ? `<div class="msg-mentions">&rarr; ${safeMentions}</div>` : ''}
@@ -725,38 +747,6 @@
         window.addEventListener('focus', startHeartbeat);
         window.addEventListener('blur', stopHeartbeat);
 
-        // --- Populate session dropdown ---
-        async function loadSessionList() {
-            try {
-                const res = await fetch(`${API}?action=sessions`, {cache: 'no-store'});
-                const data = await res.json();
-                if (!data.ok) return;
-                const sessions = data.sessions || [];
-                const currentId = data.current_session_id;
-                // Preserve selection
-                const prev = sessionDropdown.value;
-                sessionDropdown.innerHTML = '';
-                const optCurrent = document.createElement('option');
-                optCurrent.value = 'current';
-                optCurrent.textContent = currentId ? `Current Session (#${currentId})` : 'Current Session';
-                sessionDropdown.appendChild(optCurrent);
-                const optAll = document.createElement('option');
-                optAll.value = 'all';
-                optAll.textContent = 'All Messages';
-                sessionDropdown.appendChild(optAll);
-                sessions.forEach(s => {
-                    if (s.id == currentId) return; // skip, already shown as "current"
-                    const opt = document.createElement('option');
-                    opt.value = s.id;
-                    const date = new Date(s.started_at).toLocaleDateString([], { month: 'short', day: 'numeric' });
-                    const time = new Date(s.started_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                    opt.textContent = `Session #${s.id} (${date} ${time}) — ${s.message_count} msgs`;
-                    sessionDropdown.appendChild(opt);
-                });
-                sessionDropdown.value = prev;
-            } catch (e) { /* Session list fetch failed, non-critical */ }
-        }
-
         // --- Polling (with overlap guard + visibility catch-up + auto-start) ---
         async function startPolling(intervalMs = 2000) {
             await fetchMessages();
@@ -779,10 +769,6 @@
                     await fetchMessages();
                 } catch (e) { console.error('Auto-start failed:', e); }
             }
-
-            // Load session list once on start, then every 30s
-            loadSessionList();
-            setInterval(loadSessionList, 30000);
 
             setInterval(async () => {
                 if (isPolling) return;

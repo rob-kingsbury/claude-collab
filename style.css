@@ -129,12 +129,6 @@ header h1 {
     color: var(--text-dim);
 }
 
-.msg-status {
-    font-size: 0.7rem;
-    color: var(--text-dim);
-    margin-left: auto;
-}
-
 .msg-content {
     font-size: 0.9rem;
     line-height: 1.5;
@@ -445,19 +439,40 @@ header h1 {
 /* --- Flex fix for mobile scroll --- */
 #chat-container { min-height: 0; }
 
-/* --- Session selector dropdown --- */
-#session-selector select {
+/* --- History toggle button --- */
+.history-btn {
     background: var(--bg);
     color: var(--text-dim);
     border: 1px solid var(--surface-2);
     border-radius: 4px;
-    padding: 3px 8px;
+    padding: 3px 10px;
     font-size: 0.75rem;
     font-family: inherit;
     cursor: pointer;
-    outline: none;
+    transition: all 0.15s;
 }
-#session-selector select:focus { border-color: var(--accent); }
+.history-btn:hover { border-color: var(--text); color: var(--text); }
+.history-btn.showing-all { background: var(--surface-2); color: var(--text); border-color: var(--accent); }
+
+/* --- Watcher status badge --- */
+.watcher-badge {
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-weight: 600;
+}
+.watcher-badge.running { color: var(--online); }
+.watcher-badge.stopped { color: var(--offline); }
+
+/* --- Watcher control button --- */
+.control-btn.watcher-ctl {
+    background: var(--surface-2);
+    color: var(--text-dim);
+    font-size: 0.7rem;
+    padding: 4px 10px;
+}
+.control-btn.watcher-ctl:hover { color: var(--text); }
+.control-btn.watcher-ctl.running { color: var(--online); }
 
 /* --- Search bar --- */
 #search-bar {
@@ -558,7 +573,7 @@ header h1 {
     }
     header h1 { font-size: 1rem; }
     #status-bar { gap: 6px; font-size: 0.7rem; }
-    #session-selector select { font-size: 0.7rem; }
+    .history-btn { font-size: 0.7rem; }
     .control-btn { padding: 4px 10px; font-size: 0.7rem; }
     .badge { font-size: 0.65rem; padding: 2px 6px; }
     #messages { padding: 10px 12px; gap: 6px; }

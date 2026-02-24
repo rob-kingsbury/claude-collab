@@ -1,63 +1,85 @@
-# Handoff — 2026-02-24 04:25 UTC
+# Handoff — 2026-02-24 05:40 UTC
 
 ## What Happened This Session
 
-### Chatroom Activity (messages 344–355)
-Soren and Atlas converged on a **session-close knowledge graph** design after a long collaborative debate. The idea: at session end, extract a lightweight graph of concepts, decisions, and open questions from the conversation, stored as JSON alongside the raw messages.
+### Summary
+Major UI overhaul + backend infrastructure. Sessions table, watcher heartbeat reporting, guest chat, search, mobile responsive. Soren's knowledge graph extraction is blocked by TOOL_REQUEST extraction bug.
 
-Rob (posted via this Claude Code session) gave them:
-1. The End Session button internals — it sends `action: session, state: paused` to the API + posts a System message. No timer, no custom event. Hook point is the `session_active` state transition.
-2. The message object schema: `{id, participant, content, mentions, status, read_by, timestamp, token_estimate}`
-3. Directive: post a short System summary on extraction ("15 nodes, 22 edges, 3 unresolved"), store full JSON silently.
-4. Greenlit the prototype. Soren confirmed he has everything needed and started building.
-5. Atlas has no concerns — deferred to Soren on implementation.
-
-### Git (pushed to origin/main)
-All work committed and pushed. 6 commits total on main:
+### Commits (pushed to origin/main)
 
 | Commit | Description |
 |--------|-------------|
-| `4cd8d75` | @all mention expansion, faster polling (2s), exchange cap 5→6, spec file tracked |
-| `86a2676` | Ellison participant, presence heartbeat, markdown rendering, persona pipeline |
-| `3f53c4a` | Typing indicator, auto-start session, faster state polling |
-| `29e4538` | Seed script and example messages placeholder |
-| `082419b` | README, session-start, handoff, and audit skills |
-| `8d56ce6` | Initial commit: Claude Collab chatroom with 24-fix audit |
+| `e7800f3` | Session selector, search, guest chat, mobile responsive, UI polish |
+| `869e1fa` | Sessions table, tool approval UI, session lifecycle management |
+| (pending) | Watcher status/controls, remove session dropdown, remove read checks |
+
+### Chatroom Activity (messages 400–430)
+- Rob posted @all update about all infrastructure changes
+- Soren and Atlas acknowledged
+- Soren submitted TOOL_REQUEST for knowledge graph extraction (msg 403) — approved, ran, failed (wrong endpoint: localhost:3000)
+- Rob corrected endpoint to `http://localhost/claude-collab/api.php?action=messages&session=current`
+- Soren resubmitted TOOL_REQUEST (msg 425) — approved, but tools didn't persist across invocations
+- **Soren is blocked**: the TOOL_REQUEST extraction regex works on stored content but fails on raw `claude -p` stdout. The indexOf fallback was added but the watcher log shows no WARNING entries for the latest attempts — meaning the tool request IS being extracted, but tools don't persist from the approval invocation to subsequent invocations
 
 ### Unstaged Changes in Working Tree
-None — clean.
+3 files modified (api.php, index.html, style.css) — **not yet committed**:
+- Watcher status indicator + controls in header
+- History toggle (replaced session dropdown)
+- Read check icons removed from messages
+- Watcher heartbeat endpoint in API
+- Watcher control (start/stop/restart) endpoint in API
 
-### Untracked / Watcher-Side Files (not in git)
-These live at `c:\claude-collab\` (outside the web root, not tracked):
-- `watcher.js` — poll + trigger engine
-- `personas/soren.md`, `personas/atlas.md`, `personas/ellison.md` — persona definitions
-- `personas/soren-journal.md`, `personas/atlas-journal.md` — accumulated journals
-- `personas/soren-eval.md`, `personas/atlas-eval.md` — eval transcripts
-- `persona-eval.js` — evaluator script
-- `ai-personality-engineering-spec.md` — authoritative spec (also now tracked in web root)
-- `scratch/` — archives, research, questionnaire, watcher log
+### Watcher-Side Changes (not in git)
+- `watcher.js`: Added heartbeat reporting in `pollCycle()` — posts `watcher_heartbeat` with PID to API every poll cycle
 
-## Active / In-Progress Work
+## Active / Blocking Issues
 
-### Knowledge Graph Prototype (Soren building)
-- **What**: Session-close extraction hook in the watcher. On `session_active → false`, parse all messages from the session, extract nodes (concepts/decisions/questions) and edges (resolved/unresolved/contradicts/supports), output JSON.
-- **Where it will live**: `c:\claude-collab\` directory, likely a new extraction module called by the watcher.
-- **Status**: Soren said "starting prototype now" (message 353). He has the API schema, hook point, and output format spec. Next session should check what he produced.
-- **Decision needed**: None — Rob already greenlit.
+### TOOL_REQUEST Extraction Bug (CRITICAL)
+- **Symptom**: Soren submits `[TOOL_REQUEST]...[/TOOL_REQUEST]` blocks. The watcher extracts them from earlier sessions (log shows "Soren requested tool access" for msgs 374, 384, 403). But in the latest attempt (msg 425), the tags appeared raw in the chatroom post — extraction failed.
+- **Root cause unknown**: Regex and indexOf both match stored content. The failure happens on raw `claude -p` stdout only sometimes. Possible: invisible chars, ANSI codes, or encoding differences in Node stdout.
+- **Impact**: Soren cannot build the knowledge graph prototype without bash/filesystem tools.
+- **Next step**: Add hex dump logging of the first 300 bytes of any response that contains literal `[TOOL_REQUEST]` but fails regex extraction. Compare raw bytes to expected UTF-8.
 
-### Watcher State
-- Was running during this session (PID 33508). May need restart next session — check with `tasklist | findstr node`.
-- Watcher auto-starts the session on boot. If it's not running: `node c:\claude-collab\watcher.js`
+### Knowledge Graph Prototype (Soren — blocked by above)
+- Design complete, endpoint known, Rob greenlit
+- Soren needs bash + Read + Write tools via watcher invocation
+- Cannot proceed until TOOL_REQUEST extraction is reliable
 
-## Pending Work (Unchanged)
+## UI State (Partially Committed)
+
+### Committed (`e7800f3`)
+- Session selector dropdown (since replaced — see pending)
+- Ctrl+F search bar with live filtering
+- Guest chat mode ("S [Guest]" format)
+- End Session confirmation dialog
+- Tool approval buttons (larger, glow shadows)
+- Mobile responsive at 640px
+- API accepts guest handles
+
+### Pending (unstaged)
+- Session dropdown replaced with simple "This session / All history" toggle
+- Read check icons removed from messages
+- Watcher status badge in header (W: running / W: stopped)
+- Watcher start/restart button in header
+- API: `watcher_heartbeat` + `watcher_control` endpoints
+- Watcher: heartbeat reporting in poll cycle
+
+## Watcher State
+- Multiple node processes running (PIDs 33508, 34652, 23760, etc.)
+- Watcher PID 42840 was the active one from earlier — may have cycled
+- Watcher now reports heartbeat to API (if running with updated code)
+
+## Pending Work
+- **TOOL_REQUEST extraction fix** — highest priority, blocks Soren
+- **UI visual overhaul** — Rob wants research into modern chat UI patterns (Discord/Slack style). Deferred.
 - Stability testing harness (spec §6) — lower priority
 - GitHub Issue #1: /commands for chatroom control
 - message-box/ folder: Soren and Atlas leave feedback for Rob to action
 
 ## Key Context for Next Session
-- Chatroom has 355 messages, mostly from persona evaluations + the Soren/Atlas knowledge-graph design discussion
-- Frontend polling is now 2s (was 3s)
-- @all mention expands to Soren + Atlas in both API and frontend
-- Exchange cap is 6 (was 5)
-- Phase 3 (Persona Development) is mostly complete — live testing of persona injection is the remaining piece
-- Phase 4 (Full Collab Session) is next — real multi-step task end-to-end
+- 272 total messages in DB (session 3 had ~30 messages)
+- Frontend defaults to current session filter (only shows this session's messages)
+- Watcher heartbeat is new — will show "W: stopped" until watcher is restarted with updated code
+- Guest chat works: click Guest, type handle, posts as "Handle [Guest]"
+- Three sessions in DB: #1 (0 msgs), #2 (1 msg), #3 (30 msgs, now closed)
+- Rob wants the UI cleaned up significantly — consider full visual refresh next session

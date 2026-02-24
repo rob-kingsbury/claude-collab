@@ -101,6 +101,8 @@ function initDb(PDO $db): void {
         'rob_focused' => 'false',
         'conversation_state' => 'active',
         'current_session_id' => '',
+        'watcher_heartbeat_at' => '',
+        'watcher_pid' => '',
     ];
     $stmt = $db->prepare("INSERT OR IGNORE INTO session_state (key, value) VALUES (?, ?)");
     foreach ($defaults as $k => $v) {
@@ -147,9 +149,11 @@ function migrateDb(PDO $db): void {
     // Index after column exists
     $db->exec("CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id)");
 
-    // Add current_session_id to session_state if missing
+    // Add missing session_state keys
     $stmt = $db->prepare("INSERT OR IGNORE INTO session_state (key, value) VALUES (?, ?)");
     $stmt->execute(['current_session_id', '']);
+    $stmt->execute(['watcher_heartbeat_at', '']);
+    $stmt->execute(['watcher_pid', '']);
 }
 
 // Get current session ID (or null if none active)
@@ -627,6 +631,47 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'session_active' => $state === 'active',
             'session_id' => getCurrentSessionId($db)
         ]);
+        exit;
+    }
+
+    // --- Watcher heartbeat (watcher reports it's alive) ---
+    if ($action === 'watcher_heartbeat') {
+        setState($db, 'watcher_heartbeat_at', gmdate('Y-m-d\TH:i:s\Z'));
+        $pid = $input['pid'] ?? '';
+        if ($pid !== '') setState($db, 'watcher_pid', (string)$pid);
+        echo json_encode(['ok' => true]);
+        exit;
+    }
+
+    // --- Watcher control (start/stop from frontend) ---
+    if ($action === 'watcher_control') {
+        $command = $input['command'] ?? '';
+        $watcherScript = 'c:\\claude-collab\\watcher.js';
+        $watcherPid = getState($db, 'watcher_pid');
+
+        if ($command === 'stop' && $watcherPid !== '') {
+            exec("taskkill /PID {$watcherPid} /F 2>&1", $out, $code);
+            setState($db, 'watcher_pid', '');
+            setState($db, 'watcher_heartbeat_at', '');
+            echo json_encode(['ok' => true, 'action' => 'stopped', 'output' => implode("\n", $out)]);
+            exit;
+        }
+
+        if ($command === 'start' || $command === 'restart') {
+            // Kill existing if restart
+            if ($command === 'restart' && $watcherPid !== '') {
+                exec("taskkill /PID {$watcherPid} /F 2>&1");
+                sleep(1);
+            }
+            // Start new watcher in background
+            $cmd = "start /B node \"{$watcherScript}\" > NUL 2>&1";
+            pclose(popen($cmd, 'r'));
+            echo json_encode(['ok' => true, 'action' => $command === 'restart' ? 'restarted' : 'started']);
+            exit;
+        }
+
+        http_response_code(400);
+        echo json_encode(['ok' => false, 'error' => 'Command must be start, stop, or restart']);
         exit;
     }
 
