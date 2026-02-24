@@ -159,7 +159,7 @@
         });
 
         // --- @mention autocomplete ---
-        const mentionNames = ['Rob', 'Soren', 'Atlas', 'Web', 'Ellison'];
+        const mentionNames = ['Rob', 'Soren', 'Atlas', 'all', 'Web', 'Ellison'];
         const mentionPopup = document.getElementById('mention-popup');
         let mentionStart = -1; // cursor position of the '@'
         let mentionSelected = 0;
@@ -490,7 +490,7 @@
                 .replace(/`([^`]+)`/g, '<code>$1</code>')           // inline code
                 .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')    // bold
                 .replace(/\*(.+?)\*/g, '<em>$1</em>')                // italic
-                .replace(/@(Rob|Soren|Atlas|Web|Ellison)/g, '<span class="mention">@$1</span>');
+                .replace(/@(Rob|Soren|Atlas|Web|Ellison|all)\b/gi, '<span class="mention">@$1</span>');
         }
 
         function renderMessage(msg) {
@@ -586,7 +586,7 @@
         window.addEventListener('blur', stopHeartbeat);
 
         // --- Polling (with overlap guard + visibility catch-up + auto-start) ---
-        async function startPolling(intervalMs = 3000) {
+        async function startPolling(intervalMs = 2000) {
             await fetchMessages();
             await fetchState();
 

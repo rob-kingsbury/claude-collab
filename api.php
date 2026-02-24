@@ -80,7 +80,7 @@ function initDb(PDO $db): void {
     $defaults = [
         'session_active' => 'false',
         'exchange_counter' => '0',
-        'exchange_cap' => '5',
+        'exchange_cap' => '6',
         'last_rob_message_at' => '',
         'rob_typing_at' => '',
         'participant_status_Soren' => 'idle',
@@ -342,9 +342,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         }
 
-        // Auto-detect @mentions
-        preg_match_all('/@(Rob|Soren|Atlas|Web|Ellison)\b/', $content, $matches);
-        $mentions = array_values(array_unique($input['mentions'] ?? $matches[1] ?? []));
+        // Auto-detect @mentions (@all expands to Soren + Atlas)
+        preg_match_all('/@(Rob|Soren|Atlas|Web|Ellison|all)\b/i', $content, $matches);
+        $raw = $input['mentions'] ?? $matches[1] ?? [];
+        $expanded = [];
+        foreach ($raw as $m) {
+            if (strtolower($m) === 'all') {
+                $expanded[] = 'Soren';
+                $expanded[] = 'Atlas';
+            } else {
+                $expanded[] = $m;
+            }
+        }
+        $mentions = array_values(array_unique($expanded));
 
         $tokenEst = estimateTokens($content);
 
