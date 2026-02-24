@@ -1,0 +1,6 @@
+# Prevent PHP execution in uploads directory
+php_flag engine off
+AddHandler default-handler .php .phtml .phar
+
+# Prevent directory listing
+Options -Indexes

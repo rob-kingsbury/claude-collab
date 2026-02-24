@@ -2,20 +2,27 @@
 /**
  * Claude Collab Chatroom API — SQLite Backend
  *
- * GET  ?action=messages[&since=ID][&limit=N][&session=current|ID]  → return messages
+ * GET  ?action=messages[&since=ID][&limit=N][&session=current|ID]  → return messages (with attachments)
  * GET  ?action=pending&for=<name>             → unread messages mentioning participant
  * GET  ?action=history&mode=full|since&since=N → summary + recent messages (for AI context)
  * GET  ?action=state                          → session state (active, typing, exchange count)
  * GET  ?action=status                         → participant busy/idle status
- * POST {from, content}                        → add a message
+ * GET  ?action=presence                        → Rob's presence state
+ * GET  ?action=sessions                        → list all sessions with message counts
+ * GET  ?action=conversations&for=<name>        → list DM conversations for a participant
+ * GET  ?action=dm_messages&conversation_id=N[&since=N][&limit=N] → get DM messages
+ * GET  ?action=attachments&message_id=N|dm_message_id=N → get attachments for a message
+ * POST {from, content}                        → add a chatroom message
  * POST {action: "status", id, status, by}     → update message delivery status
  * POST {action: "set_status", participant, state} → set participant busy/idle
  * POST {action: "typing", participant}         → typing heartbeat
  * POST {action: "heartbeat"}                   → Rob's presence heartbeat (tab focused)
- * GET  ?action=presence                        → Rob's presence state
  * POST {action: "session", state}              → set session active/paused
  * POST {action: "summary", summary_text, covers_up_to} → store a summary
- * GET  ?action=sessions                              → list all sessions with message counts
+ * POST {action: "dm", from, to, content}       → send a direct message
+ * POST {action: "create_conversation", from, with} → create/find a DM conversation
+ * POST {action: "dm_read", conversation_id, reader} → mark DMs as read
+ * POST {action: "upload"} (multipart form)     → upload a file attachment
  */
 
 header('Content-Type: application/json');
@@ -57,7 +64,8 @@ function initDb(PDO $db): void {
             read_by TEXT DEFAULT '[]',
             timestamp TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
             token_estimate INTEGER DEFAULT 0,
-            session_id INTEGER DEFAULT NULL
+            session_id INTEGER DEFAULT NULL,
+            has_attachment INTEGER DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS sessions (
@@ -84,6 +92,42 @@ function initDb(PDO $db): void {
         CREATE INDEX IF NOT EXISTS idx_messages_participant ON messages(participant);
         CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp);
         CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
+
+        CREATE TABLE IF NOT EXISTS conversations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            participant_a TEXT NOT NULL,
+            participant_b TEXT NOT NULL,
+            created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            last_message_at TEXT DEFAULT NULL,
+            last_message_preview TEXT DEFAULT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_conversations_pair ON conversations(participant_a, participant_b);
+
+        CREATE TABLE IF NOT EXISTS dm_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_id INTEGER NOT NULL,
+            sender TEXT NOT NULL,
+            content TEXT NOT NULL,
+            timestamp TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            read_at TEXT DEFAULT NULL,
+            has_attachment INTEGER DEFAULT 0,
+            FOREIGN KEY (conversation_id) REFERENCES conversations(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_dm_messages_convo ON dm_messages(conversation_id);
+
+        CREATE TABLE IF NOT EXISTS file_attachments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            message_id INTEGER DEFAULT NULL,
+            dm_message_id INTEGER DEFAULT NULL,
+            filename TEXT NOT NULL,
+            original_name TEXT NOT NULL,
+            mime_type TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            uploaded_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            uploaded_by TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_attachments_message ON file_attachments(message_id);
+        CREATE INDEX IF NOT EXISTS idx_attachments_dm ON file_attachments(dm_message_id);
     ");
 
     // Initialize session state defaults
@@ -103,6 +147,7 @@ function initDb(PDO $db): void {
         'current_session_id' => '',
         'watcher_heartbeat_at' => '',
         'watcher_pid' => '',
+        'session_ended_explicitly' => 'false',
     ];
     $stmt = $db->prepare("INSERT OR IGNORE INTO session_state (key, value) VALUES (?, ?)");
     foreach ($defaults as $k => $v) {
@@ -154,6 +199,73 @@ function migrateDb(PDO $db): void {
     $stmt->execute(['current_session_id', '']);
     $stmt->execute(['watcher_heartbeat_at', '']);
     $stmt->execute(['watcher_pid', '']);
+    $stmt->execute(['session_ended_explicitly', 'false']);
+
+    // Add conversations table
+    $db->exec("
+        CREATE TABLE IF NOT EXISTS conversations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            participant_a TEXT NOT NULL,
+            participant_b TEXT NOT NULL,
+            created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            last_message_at TEXT DEFAULT NULL,
+            last_message_preview TEXT DEFAULT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_conversations_pair ON conversations(participant_a, participant_b);
+    ");
+
+    // Add dm_messages table
+    $db->exec("
+        CREATE TABLE IF NOT EXISTS dm_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_id INTEGER NOT NULL,
+            sender TEXT NOT NULL,
+            content TEXT NOT NULL,
+            timestamp TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            read_at TEXT DEFAULT NULL,
+            has_attachment INTEGER DEFAULT 0,
+            FOREIGN KEY (conversation_id) REFERENCES conversations(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_dm_messages_convo ON dm_messages(conversation_id);
+    ");
+
+    // Add file_attachments table
+    $db->exec("
+        CREATE TABLE IF NOT EXISTS file_attachments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            message_id INTEGER DEFAULT NULL,
+            dm_message_id INTEGER DEFAULT NULL,
+            filename TEXT NOT NULL,
+            original_name TEXT NOT NULL,
+            mime_type TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            uploaded_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            uploaded_by TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_attachments_message ON file_attachments(message_id);
+        CREATE INDEX IF NOT EXISTS idx_attachments_dm ON file_attachments(dm_message_id);
+    ");
+
+    // Add has_attachment column to messages if missing
+    $msgCols = $db->query("PRAGMA table_info(messages)")->fetchAll();
+    $msgColNames = array_column($msgCols, 'name');
+    if (!in_array('has_attachment', $msgColNames)) {
+        $db->exec("ALTER TABLE messages ADD COLUMN has_attachment INTEGER DEFAULT 0");
+    }
+
+    // One-time migration: assign orphan NULL-session messages to session 1
+    // This prevents historical messages from bleeding into every new session's AI context
+    $orphanCount = $db->query("SELECT COUNT(*) as cnt FROM messages WHERE session_id IS NULL")->fetch()['cnt'];
+    if ($orphanCount > 0) {
+        // Ensure session 1 exists
+        $s1 = $db->query("SELECT id FROM sessions WHERE id = 1")->fetch();
+        if (!$s1) {
+            $db->exec("INSERT INTO sessions (id, started_at, ended_at, title) VALUES (1, '2026-01-01T00:00:00.000Z', '2026-02-24T00:00:00.000Z', 'Historical messages')");
+        } elseif (!$db->query("SELECT ended_at FROM sessions WHERE id = 1")->fetch()['ended_at']) {
+            $db->exec("UPDATE sessions SET ended_at = '2026-02-24T00:00:00.000Z', title = 'Historical messages' WHERE id = 1");
+        }
+        $db->exec("UPDATE messages SET session_id = 1 WHERE session_id IS NULL");
+    }
 }
 
 // Get current session ID (or null if none active)
@@ -197,6 +309,70 @@ function endSession(PDO $db): void {
 $db = getDb($DB_PATH);
 migrateDb($db);
 
+// --- Uploads directory ---
+$uploadsDir = __DIR__ . '/uploads';
+if (!is_dir($uploadsDir)) {
+    mkdir($uploadsDir, 0755, true);
+}
+
+// --- Helper: find or create conversation (always store alphabetically-first name as participant_a) ---
+function findOrCreateConversation(PDO $db, string $nameA, string $nameB): array {
+    $pA = (strcmp($nameA, $nameB) <= 0) ? $nameA : $nameB;
+    $pB = ($pA === $nameA) ? $nameB : $nameA;
+
+    $stmt = $db->prepare("SELECT * FROM conversations WHERE participant_a = ? AND participant_b = ?");
+    $stmt->execute([$pA, $pB]);
+    $convo = $stmt->fetch();
+    if ($convo) {
+        return $convo;
+    }
+
+    $stmt = $db->prepare("INSERT INTO conversations (participant_a, participant_b) VALUES (?, ?)");
+    $stmt->execute([$pA, $pB]);
+    $id = (int)$db->lastInsertId();
+
+    $stmt = $db->prepare("SELECT * FROM conversations WHERE id = ?");
+    $stmt->execute([$id]);
+    return $stmt->fetch();
+}
+
+// --- Helper: get attachments for an array of message IDs (chatroom messages) ---
+function getAttachmentsForMessages(PDO $db, array $messageIds): array {
+    if (empty($messageIds)) return [];
+    $placeholders = implode(',', array_fill(0, count($messageIds), '?'));
+    $stmt = $db->prepare("SELECT * FROM file_attachments WHERE message_id IN ($placeholders)");
+    $stmt->execute($messageIds);
+    $rows = $stmt->fetchAll();
+    $map = [];
+    foreach ($rows as $row) {
+        $row['url'] = 'uploads/' . $row['filename'];
+        $map[$row['message_id']][] = $row;
+    }
+    return $map;
+}
+
+// --- Helper: get attachments for an array of DM message IDs ---
+function getAttachmentsForDmMessages(PDO $db, array $dmMessageIds): array {
+    if (empty($dmMessageIds)) return [];
+    $placeholders = implode(',', array_fill(0, count($dmMessageIds), '?'));
+    $stmt = $db->prepare("SELECT * FROM file_attachments WHERE dm_message_id IN ($placeholders)");
+    $stmt->execute($dmMessageIds);
+    $rows = $stmt->fetchAll();
+    $map = [];
+    foreach ($rows as $row) {
+        $row['url'] = 'uploads/' . $row['filename'];
+        $map[$row['dm_message_id']][] = $row;
+    }
+    return $map;
+}
+
+// --- Helper: validate participant name ---
+function isValidParticipant(string $name): bool {
+    $knownParticipants = ['Rob', 'Soren', 'Atlas', 'Web', 'System', 'Ellison'];
+    if (in_array($name, $knownParticipants)) return true;
+    return (bool)preg_match('/^[a-zA-Z0-9 _\-\[\]]{1,20}$/', $name);
+}
+
 // --- GET ---
 if ($_SERVER['REQUEST_METHOD'] === 'GET') {
     $action = $_GET['action'] ?? 'messages';
@@ -216,7 +392,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
             $params[] = $since;
         }
 
-        // Session filtering: 'current' = current session, numeric = specific session ID
+        // Session filtering: 'current' = current session (+ orphan NULL messages), numeric = specific session ID
         if ($session === 'current') {
             $currentId = getCurrentSessionId($db);
             if ($currentId !== null) {
@@ -247,6 +423,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         foreach ($messages as &$m) {
             $m['mentions'] = json_decode($m['mentions'], true) ?? [];
             $m['read_by'] = json_decode($m['read_by'], true) ?? [];
+        }
+        unset($m);
+
+        // Always initialize attachments array, and merge in file data for messages that have them
+        $withAttachments = array_filter($messages, fn($m) => !empty($m['has_attachment']));
+        $attachMap = !empty($withAttachments) ? getAttachmentsForMessages($db, array_column($withAttachments, 'id')) : [];
+        foreach ($messages as &$m) {
+            $m['attachments'] = $attachMap[$m['id']] ?? [];
         }
         unset($m);
 
@@ -293,8 +477,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         $paused = !$sessionActive || !$robPresent || $robTypingRecently;
 
         // Safe LIKE query — $for is validated against allowlist above
-        $stmt = $db->prepare("SELECT * FROM messages WHERE mentions LIKE ? AND read_by NOT LIKE ? ORDER BY id ASC");
-        $stmt->execute(['%"' . $for . '"%', '%"' . $for . '"%']);
+        // Filter to current session only (orphan NULL messages have been migrated to session 1)
+        $currentId = getCurrentSessionId($db);
+        if ($currentId !== null) {
+            $stmt = $db->prepare("SELECT * FROM messages WHERE mentions LIKE ? AND read_by NOT LIKE ? AND session_id = ? ORDER BY id ASC");
+            $stmt->execute(['%"' . $for . '"%', '%"' . $for . '"%', $currentId]);
+        } else {
+            $stmt = $db->prepare("SELECT * FROM messages WHERE mentions LIKE ? AND read_by NOT LIKE ? ORDER BY id ASC");
+            $stmt->execute(['%"' . $for . '"%', '%"' . $for . '"%']);
+        }
         $pending = $stmt->fetchAll();
 
         foreach ($pending as &$m) {
@@ -320,9 +511,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         $mode = $_GET['mode'] ?? 'full';
         $since = (int)($_GET['since'] ?? 0);
 
+        // Session-scoped: only current session + orphan messages
+        $currentId = getCurrentSessionId($db);
+        $sessionFilter = ($currentId !== null) ? " AND session_id = $currentId" : "";
+
         if ($mode === 'since' && $since > 0) {
             // Mid-session: only new messages
-            $stmt = $db->prepare("SELECT * FROM messages WHERE id > ? ORDER BY id ASC");
+            $stmt = $db->prepare("SELECT * FROM messages WHERE id > ?$sessionFilter ORDER BY id ASC");
             $stmt->execute([$since]);
             $messages = $stmt->fetchAll();
             foreach ($messages as &$m) {
@@ -341,7 +536,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         $afterId = $summary ? (int)$summary['covers_up_to_message_id'] : 0;
         $recentLimit = 20;
 
-        $stmt = $db->prepare("SELECT * FROM messages WHERE id > ? ORDER BY id DESC LIMIT ?");
+        $stmt = $db->prepare("SELECT * FROM messages WHERE id > ?$sessionFilter ORDER BY id DESC LIMIT ?");
         $stmt->execute([$afterId, $recentLimit]);
         $messages = array_reverse($stmt->fetchAll()); // Reverse to chronological
 
@@ -424,16 +619,121 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         exit;
     }
 
+    // --- Conversations list for a participant ---
+    if ($action === 'conversations') {
+        $for = $_GET['for'] ?? '';
+        if ($for === '' || !isValidParticipant($for)) {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'error' => 'Missing or invalid "for" parameter']);
+            exit;
+        }
+
+        $stmt = $db->prepare("
+            SELECT c.*,
+                CASE WHEN c.participant_a = ? THEN c.participant_b ELSE c.participant_a END AS other_participant,
+                (SELECT COUNT(*) FROM dm_messages dm WHERE dm.conversation_id = c.id AND dm.sender != ? AND dm.read_at IS NULL) AS unread_count
+            FROM conversations c
+            WHERE c.participant_a = ? OR c.participant_b = ?
+            ORDER BY c.last_message_at DESC
+        ");
+        $stmt->execute([$for, $for, $for, $for]);
+        $conversations = $stmt->fetchAll();
+
+        echo json_encode(['ok' => true, 'conversations' => $conversations]);
+        exit;
+    }
+
+    // --- DM messages for a conversation ---
+    if ($action === 'dm_messages') {
+        $conversationId = (int)($_GET['conversation_id'] ?? 0);
+        if ($conversationId === 0) {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'error' => 'Missing "conversation_id"']);
+            exit;
+        }
+
+        $since = (int)($_GET['since'] ?? 0);
+        $limit = (int)($_GET['limit'] ?? 0);
+
+        $sql = "SELECT * FROM dm_messages WHERE conversation_id = ?";
+        $params = [$conversationId];
+
+        if ($since > 0) {
+            $sql .= " AND id > ?";
+            $params[] = $since;
+        }
+
+        $sql .= " ORDER BY id ASC";
+
+        if ($limit > 0) {
+            $sql .= " LIMIT ?";
+            $params[] = $limit;
+        }
+
+        $stmt = $db->prepare($sql);
+        $stmt->execute($params);
+        $messages = $stmt->fetchAll();
+
+        // Attach file attachments to DM messages that have them
+        $withAttachments = array_filter($messages, fn($m) => !empty($m['has_attachment']));
+        $attachMap = !empty($withAttachments) ? getAttachmentsForDmMessages($db, array_column($withAttachments, 'id')) : [];
+        foreach ($messages as &$m) {
+            $m['attachments'] = $attachMap[$m['id']] ?? [];
+        }
+        unset($m);
+
+        echo json_encode([
+            'ok' => true,
+            'dm_messages' => $messages,
+            'count' => count($messages),
+            'conversation_id' => $conversationId
+        ]);
+        exit;
+    }
+
+    // --- Attachments for a specific message or DM message ---
+    if ($action === 'attachments') {
+        $messageId = isset($_GET['message_id']) ? (int)$_GET['message_id'] : null;
+        $dmMessageId = isset($_GET['dm_message_id']) ? (int)$_GET['dm_message_id'] : null;
+
+        if ($messageId === null && $dmMessageId === null) {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'error' => 'Provide "message_id" or "dm_message_id"']);
+            exit;
+        }
+
+        if ($messageId !== null) {
+            $stmt = $db->prepare("SELECT * FROM file_attachments WHERE message_id = ?");
+            $stmt->execute([$messageId]);
+        } else {
+            $stmt = $db->prepare("SELECT * FROM file_attachments WHERE dm_message_id = ?");
+            $stmt->execute([$dmMessageId]);
+        }
+        $attachments = $stmt->fetchAll();
+        foreach ($attachments as &$a) {
+            $a['url'] = 'uploads/' . $a['filename'];
+        }
+        unset($a);
+
+        echo json_encode(['ok' => true, 'attachments' => $attachments]);
+        exit;
+    }
+
     http_response_code(400);
-    echo json_encode(['ok' => false, 'error' => 'Unknown action: ' . $action]);
+    echo json_encode(['ok' => false, 'error' => 'Unknown action']);
     exit;
 }
 
 // --- POST ---
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $input = json_decode(file_get_contents('php://input'), true);
-    if (!$input) {
+    // Handle file uploads (multipart form data) — check $_FILES before reading php://input
+    if (!empty($_FILES)) {
         $input = $_POST;
+    } else {
+        $input = json_decode(file_get_contents('php://input'), true);
+        if (!$input) {
+            $input = $_POST;
+        }
     }
 
     $action = $input['action'] ?? 'post';
@@ -443,16 +743,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $from = trim($input['from'] ?? '');
         $content = trim($input['content'] ?? '');
 
-        if ($from === '' || $content === '') {
+        if ($from === '') {
             http_response_code(400);
-            echo json_encode(['ok' => false, 'error' => 'Missing "from" or "content"']);
+            echo json_encode(['ok' => false, 'error' => 'Missing "from"']);
             exit;
         }
+        // Allow empty content if caller will attach files
+        if ($content === '') $content = '(attachment)';
 
         $knownParticipants = ['Rob', 'Soren', 'Atlas', 'Web', 'System', 'Ellison'];
         // Allow known participants or guest handles (alphanumeric + spaces, 1-20 chars)
         $isKnown = in_array($from, $knownParticipants);
-        $isValidGuest = !$isKnown && preg_match('/^[a-zA-Z0-9 _\-\[\]]{1,30}$/', $from);
+        $isValidGuest = !$isKnown && preg_match('/^[a-zA-Z0-9 _\-\[\]]{1,20}$/', $from);
         if (!$isKnown && !$isValidGuest) {
             http_response_code(400);
             echo json_encode(['ok' => false, 'error' => 'Invalid "from". Use a known participant or a guest handle (1-20 alphanumeric chars).']);
@@ -460,15 +762,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         // Auto-detect @mentions (@all expands to Soren + Atlas)
+        // Normalize to canonical case so pending matching works correctly
         preg_match_all('/@(Rob|Soren|Atlas|Web|Ellison|all)\b/i', $content, $matches);
         $raw = $input['mentions'] ?? $matches[1] ?? [];
+        $canonicalNames = [
+            'rob' => 'Rob', 'soren' => 'Soren', 'atlas' => 'Atlas',
+            'web' => 'Web', 'ellison' => 'Ellison', 'all' => 'all'
+        ];
         $expanded = [];
         foreach ($raw as $m) {
-            if (strtolower($m) === 'all') {
+            $normalized = $canonicalNames[strtolower($m)] ?? $m;
+            if (strtolower($normalized) === 'all') {
                 $expanded[] = 'Soren';
                 $expanded[] = 'Atlas';
             } else {
-                $expanded[] = $m;
+                $expanded[] = $normalized;
             }
         }
         $mentions = array_values(array_unique($expanded));
@@ -494,6 +802,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (in_array($stripped, $startKeywords)) {
                 setState($db, 'session_active', 'true');
                 setState($db, 'exchange_counter', '0');
+                setState($db, 'session_ended_explicitly', 'false');
+                if (getCurrentSessionId($db) === null) {
+                    startSession($db);
+                }
             }
             if (in_array($stripped, $stopKeywords)) {
                 setState($db, 'session_active', 'false');
@@ -561,7 +873,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $participant = $input['participant'] ?? '';
         $state = $input['state'] ?? '';
         $validStatusParticipants = ['Soren', 'Atlas', 'Web', 'Ellison'];
-        if (!in_array($participant, $validStatusParticipants) || !in_array($state, ['busy', 'idle'])) {
+        if (!in_array($participant, $validStatusParticipants) || !in_array($state, ['busy', 'idle', 'waiting_approval'])) {
             http_response_code(400);
             echo json_encode(['ok' => false, 'error' => 'Invalid participant or state']);
             exit;
@@ -593,9 +905,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($convState === 'paused') {
                 setState($db, 'conversation_state', 'active');
             }
-            // Re-activate session if watcher paused it due to stale heartbeat
-            if (getState($db, 'session_active') !== 'true') {
+            // Re-activate session ONLY if it was paused by the watcher (stale heartbeat),
+            // NOT if Rob explicitly ended it via the End Session button.
+            if (getState($db, 'session_active') !== 'true' && getState($db, 'session_ended_explicitly') !== 'true') {
                 setState($db, 'session_active', 'true');
+                // Ensure a session row exists
+                if (getCurrentSessionId($db) === null) {
+                    startSession($db);
+                }
             }
         }
 
@@ -614,6 +931,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         setState($db, 'session_active', $state === 'active' ? 'true' : 'false');
         if ($state === 'active') {
             setState($db, 'exchange_counter', '0');
+            setState($db, 'session_ended_explicitly', 'false');
             // Create a new session row if none is active
             if (getCurrentSessionId($db) === null) {
                 $sessionId = startSession($db);
@@ -624,6 +942,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $closeSession = !empty($input['close_session']);
             if ($closeSession) {
                 endSession($db);
+                setState($db, 'session_ended_explicitly', 'true');
             }
         }
         echo json_encode([
@@ -638,7 +957,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($action === 'watcher_heartbeat') {
         setState($db, 'watcher_heartbeat_at', gmdate('Y-m-d\TH:i:s\Z'));
         $pid = $input['pid'] ?? '';
-        if ($pid !== '') setState($db, 'watcher_pid', (string)$pid);
+        if ($pid !== '' && is_numeric($pid) && (int)$pid > 0) setState($db, 'watcher_pid', (string)(int)$pid);
         echo json_encode(['ok' => true]);
         exit;
     }
@@ -647,10 +966,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($action === 'watcher_control') {
         $command = $input['command'] ?? '';
         $watcherScript = 'c:\\claude-collab\\watcher.js';
-        $watcherPid = getState($db, 'watcher_pid');
+        $watcherPid = (int)getState($db, 'watcher_pid');
 
-        if ($command === 'stop' && $watcherPid !== '') {
-            exec("taskkill /PID {$watcherPid} /F 2>&1", $out, $code);
+        if ($command === 'stop' && $watcherPid > 0) {
+            exec("taskkill /PID " . $watcherPid . " /F 2>&1", $out, $code);
             setState($db, 'watcher_pid', '');
             setState($db, 'watcher_heartbeat_at', '');
             echo json_encode(['ok' => true, 'action' => 'stopped', 'output' => implode("\n", $out)]);
@@ -659,8 +978,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if ($command === 'start' || $command === 'restart') {
             // Kill existing if restart
-            if ($command === 'restart' && $watcherPid !== '') {
-                exec("taskkill /PID {$watcherPid} /F 2>&1");
+            if ($command === 'restart' && $watcherPid > 0) {
+                exec("taskkill /PID " . $watcherPid . " /F 2>&1");
                 sleep(1);
             }
             // Start new watcher in background
@@ -691,8 +1010,204 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
+    // --- Send a DM ---
+    if ($action === 'dm') {
+        $from = trim($input['from'] ?? '');
+        $to = trim($input['to'] ?? '');
+        $content = trim($input['content'] ?? '');
+
+        if ($from === '' || $to === '') {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'error' => 'Missing "from" or "to"']);
+            exit;
+        }
+        // Allow empty content if caller will attach files
+        if ($content === '') $content = '(attachment)';
+        if ($from === $to) {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'error' => 'Cannot DM yourself']);
+            exit;
+        }
+        if (!isValidParticipant($from) || !isValidParticipant($to)) {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'error' => 'Invalid participant name']);
+            exit;
+        }
+
+        $convo = findOrCreateConversation($db, $from, $to);
+
+        $stmt = $db->prepare("INSERT INTO dm_messages (conversation_id, sender, content) VALUES (?, ?, ?)");
+        $stmt->execute([$convo['id'], $from, $content]);
+        $msgId = (int)$db->lastInsertId();
+
+        // Update conversation metadata
+        $preview = mb_substr($content, 0, 100);
+        $stmt = $db->prepare("UPDATE conversations SET last_message_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), last_message_preview = ? WHERE id = ?");
+        $stmt->execute([$preview, $convo['id']]);
+
+        // Fetch the created message
+        $stmt = $db->prepare("SELECT * FROM dm_messages WHERE id = ?");
+        $stmt->execute([$msgId]);
+        $message = $stmt->fetch();
+
+        echo json_encode(['ok' => true, 'dm_message' => $message, 'conversation_id' => (int)$convo['id']]);
+        exit;
+    }
+
+    // --- Create conversation explicitly ---
+    if ($action === 'create_conversation') {
+        $from = trim($input['from'] ?? '');
+        $with = trim($input['with'] ?? '');
+
+        if ($from === '' || $with === '') {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'error' => 'Missing "from" or "with"']);
+            exit;
+        }
+        if ($from === $with) {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'error' => 'Cannot create conversation with yourself']);
+            exit;
+        }
+        if (!isValidParticipant($from) || !isValidParticipant($with)) {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'error' => 'Invalid participant name']);
+            exit;
+        }
+
+        $convo = findOrCreateConversation($db, $from, $with);
+        echo json_encode(['ok' => true, 'conversation' => $convo]);
+        exit;
+    }
+
+    // --- Mark DMs as read ---
+    if ($action === 'dm_read') {
+        $conversationId = (int)($input['conversation_id'] ?? 0);
+        $reader = trim($input['reader'] ?? '');
+
+        if ($conversationId === 0 || $reader === '') {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'error' => 'Missing "conversation_id" or "reader"']);
+            exit;
+        }
+
+        $stmt = $db->prepare("UPDATE dm_messages SET read_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE conversation_id = ? AND sender != ? AND read_at IS NULL");
+        $stmt->execute([$conversationId, $reader]);
+        $updated = $stmt->rowCount();
+
+        echo json_encode(['ok' => true, 'marked_read' => $updated]);
+        exit;
+    }
+
+    // --- File upload ---
+    if ($action === 'upload') {
+        if (empty($_FILES['file'])) {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'error' => 'No file uploaded. Send as multipart form with field name "file"']);
+            exit;
+        }
+
+        $file = $_FILES['file'];
+        $uploadedBy = trim($input['uploaded_by'] ?? '');
+        $messageId = isset($input['message_id']) ? (int)$input['message_id'] : null;
+        $dmMessageId = isset($input['dm_message_id']) ? (int)$input['dm_message_id'] : null;
+        $overrideCap = ($input['override_cap'] ?? '') === 'true';
+
+        if ($uploadedBy === '') {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'error' => 'Missing "uploaded_by"']);
+            exit;
+        }
+        if (!isValidParticipant($uploadedBy)) {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'error' => 'Invalid "uploaded_by" participant name']);
+            exit;
+        }
+
+        // Check for upload errors
+        if ($file['error'] !== UPLOAD_ERR_OK) {
+            $errorMessages = [
+                UPLOAD_ERR_INI_SIZE => 'File exceeds server upload_max_filesize',
+                UPLOAD_ERR_FORM_SIZE => 'File exceeds form MAX_FILE_SIZE',
+                UPLOAD_ERR_PARTIAL => 'File was only partially uploaded',
+                UPLOAD_ERR_NO_FILE => 'No file was uploaded',
+                UPLOAD_ERR_NO_TMP_DIR => 'Missing temporary folder',
+                UPLOAD_ERR_CANT_WRITE => 'Failed to write file to disk',
+                UPLOAD_ERR_EXTENSION => 'Upload stopped by PHP extension',
+            ];
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'error' => $errorMessages[$file['error']] ?? 'Upload error code ' . $file['error']]);
+            exit;
+        }
+
+        // Size check
+        $maxSize = $overrideCap ? 52428800 : 10485760; // 50MB or 10MB
+        if ($file['size'] > $maxSize) {
+            http_response_code(400);
+            $maxMB = $maxSize / 1048576;
+            echo json_encode(['ok' => false, 'error' => "File too large. Maximum is {$maxMB}MB"]);
+            exit;
+        }
+
+        // Block executable extensions
+        $originalName = basename($file['name']);
+        $ext = strtolower(pathinfo($originalName, PATHINFO_EXTENSION));
+        $blockedExtensions = ['exe', 'bat', 'cmd', 'ps1', 'com', 'scr', 'vbs', 'wsf', 'msi', 'php', 'phtml', 'phar'];
+        if (in_array($ext, $blockedExtensions)) {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'error' => "File type .{$ext} is not allowed"]);
+            exit;
+        }
+
+        // Generate unique filename
+        $timestamp = time();
+        $random = bin2hex(random_bytes(8));
+        $safeOriginal = preg_replace('/[^a-zA-Z0-9._-]/', '_', $originalName);
+        $uniqueName = "{$timestamp}_{$random}_{$safeOriginal}";
+
+        $destPath = $uploadsDir . '/' . $uniqueName;
+        if (!move_uploaded_file($file['tmp_name'], $destPath)) {
+            http_response_code(500);
+            echo json_encode(['ok' => false, 'error' => 'Failed to move uploaded file']);
+            exit;
+        }
+
+        // Detect MIME type
+        $mimeType = $file['type'] ?: (function_exists('mime_content_type') ? mime_content_type($destPath) : 'application/octet-stream');
+
+        // Insert into file_attachments
+        $stmt = $db->prepare("INSERT INTO file_attachments (message_id, dm_message_id, filename, original_name, mime_type, size_bytes, uploaded_by) VALUES (?, ?, ?, ?, ?, ?, ?)");
+        $stmt->execute([
+            $messageId,
+            $dmMessageId,
+            $uniqueName,
+            $originalName,
+            $mimeType,
+            $file['size'],
+            $uploadedBy
+        ]);
+        $attachmentId = (int)$db->lastInsertId();
+
+        // Update has_attachment flag on the associated message
+        if ($messageId !== null && $messageId > 0) {
+            $db->prepare("UPDATE messages SET has_attachment = 1 WHERE id = ?")->execute([$messageId]);
+        }
+        if ($dmMessageId !== null && $dmMessageId > 0) {
+            $db->prepare("UPDATE dm_messages SET has_attachment = 1 WHERE id = ?")->execute([$dmMessageId]);
+        }
+
+        // Fetch the created record
+        $stmt = $db->prepare("SELECT * FROM file_attachments WHERE id = ?");
+        $stmt->execute([$attachmentId]);
+        $attachment = $stmt->fetch();
+        $attachment['url'] = 'uploads/' . $attachment['filename'];
+
+        echo json_encode(['ok' => true, 'attachment' => $attachment]);
+        exit;
+    }
+
     http_response_code(400);
-    echo json_encode(['ok' => false, 'error' => 'Unknown action: ' . $action]);
+    echo json_encode(['ok' => false, 'error' => 'Unknown action']);
     exit;
 }
 

@@ -4,60 +4,99 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Claude Collab Chatroom</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <div id="app">
-        <header>
-            <div id="header-left">
-                <h1>Claude Collab</h1>
-                <button id="history-toggle" class="history-btn" title="Toggle between current session and all messages">This session</button>
+        <!-- Sidebar -->
+        <aside id="sidebar">
+            <div id="sidebar-header">
+                <h2>Conversations</h2>
+                <button id="new-dm-btn" title="New DM">+</button>
             </div>
-            <div id="status-bar">
-                <span id="connection-status" class="status-dot online"></span>
-                <span id="session-badge" class="badge paused">SESSION OFF</span>
-                <span id="message-count">0 messages</span>
-                <span id="exchange-count"></span>
-                <span id="watcher-status" class="watcher-badge stopped" title="Watcher process status">W: stopped</span>
+            <div id="sidebar-search">
+                <input type="text" id="convo-search" placeholder="Search..." />
             </div>
-            <div id="session-controls">
-                <button id="watcher-btn" class="control-btn watcher-ctl" title="Start/restart watcher">W</button>
-                <button id="session-toggle" class="control-btn startup">STARTUP</button>
-            </div>
-        </header>
-
-        <div id="search-bar" class="hidden">
-            <input type="text" id="search-input" placeholder="Search messages..." />
-            <span id="search-count"></span>
-            <button id="search-close">&times;</button>
-        </div>
-
-        <main id="chat-container">
-            <div id="messages"></div>
-            <div id="typing-indicator" class="typing-indicator hidden">
-                <span class="typing-sender"></span>
-                <span class="typing-dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
-            </div>
-        </main>
-
-        <footer id="input-area">
-            <div id="sender-select">
-                <button class="sender-btn active" data-sender="Rob">Rob</button>
-                <button class="sender-btn" data-sender="Soren">Soren</button>
-                <button class="sender-btn" data-sender="Atlas">Atlas</button>
-                <button class="sender-btn" data-sender="Web">Web</button>
-                <button class="sender-btn guest-btn" data-sender="Guest">Guest</button>
-                <input type="text" id="guest-handle" class="hidden" placeholder="Handle..." maxlength="20" />
-            </div>
-            <div id="compose">
-                <div id="mention-wrapper">
-                    <textarea id="message-input" placeholder="Type a message... Type @ to mention someone." rows="3"></textarea>
-                    <div id="mention-popup" class="mention-popup hidden"></div>
+            <div id="conversation-list">
+                <!-- Group chat entry (always first) -->
+                <div class="convo-item active" data-type="group" data-id="group">
+                    <div class="convo-avatar group-avatar">#</div>
+                    <div class="convo-info">
+                        <div class="convo-name">Claude Collab</div>
+                        <div class="convo-preview">Group chat</div>
+                    </div>
                 </div>
-                <button id="send-btn">Send</button>
+                <!-- DM entries populated dynamically -->
             </div>
-            <div id="participant-status"></div>
-        </footer>
+        </aside>
+
+        <!-- Main chat area -->
+        <div id="main-panel">
+            <header>
+                <div id="header-left">
+                    <h1>Claude Collab</h1>
+                </div>
+                <div id="status-bar">
+                    <span id="connection-status" class="status-dot online"></span>
+                    <span id="session-badge" class="badge paused">SESSION OFF</span>
+                    <span id="message-count">0 messages</span>
+                    <span id="exchange-count"></span>
+                    <span id="watcher-status" class="watcher-badge stopped" title="Watcher process status">W: stopped</span>
+                </div>
+                <div id="session-controls">
+                    <button id="watcher-btn" class="control-btn watcher-ctl" title="Start/restart watcher">W</button>
+                    <button id="session-toggle" class="control-btn startup">STARTUP</button>
+                </div>
+            </header>
+
+            <div id="search-bar" class="hidden">
+                <input type="text" id="search-input" placeholder="Search messages..." />
+                <span id="search-count"></span>
+                <button id="search-close">&times;</button>
+            </div>
+
+            <main id="chat-container">
+                <div id="messages"></div>
+                <div id="typing-indicator" class="typing-indicator hidden">
+                    <span class="typing-sender"></span>
+                    <span class="typing-dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
+                </div>
+            </main>
+
+            <footer id="input-area">
+                <div id="sender-select">
+                    <button class="sender-btn active" data-sender="Rob">Rob</button>
+                    <button class="sender-btn" data-sender="Soren">Soren</button>
+                    <button class="sender-btn" data-sender="Atlas">Atlas</button>
+                    <button class="sender-btn" data-sender="Web">Web</button>
+                    <button class="sender-btn guest-btn" data-sender="Guest">Guest</button>
+                    <input type="text" id="guest-handle" class="hidden" placeholder="Handle..." maxlength="20" />
+                </div>
+                <div id="compose">
+                    <div id="mention-wrapper">
+                        <textarea id="message-input" placeholder="Type a message... Type @ to mention someone." rows="3"></textarea>
+                        <div id="mention-popup" class="mention-popup hidden"></div>
+                    </div>
+                    <input type="file" id="file-input" class="hidden" multiple />
+                    <button id="attach-btn" title="Attach file">&#x1F4CE;</button>
+                    <button id="send-btn">Send</button>
+                </div>
+                <div id="file-preview" class="hidden"></div>
+                <div id="drop-overlay" class="hidden">Drop files here</div>
+                <div id="participant-status"></div>
+                <div id="token-indicators"></div>
+            </footer>
+        </div>
+    </div>
+
+    <!-- New DM modal -->
+    <div id="new-dm-modal" class="hidden">
+        <div class="dm-modal-content">
+            <h3>New Direct Message</h3>
+            <div class="dm-participant-list"></div>
+            <button class="dm-modal-cancel" onclick="document.getElementById('new-dm-modal').classList.add('hidden')">Cancel</button>
+        </div>
     </div>
 
     <!-- New message notification sound (short beep via Web Audio API) -->
@@ -67,9 +106,17 @@
         let lastMessageId = 0;
         let isPolling = false;
         let flashInterval = null;
-        let typingTimer = null;
+
+        // --- DM / Sidebar state ---
+        let currentView = 'group'; // 'group' or conversation ID (number)
+        let conversations = [];
+        let dmMessages = [];
+        let lastDmId = 0;
+        let dmRecipient = null; // name of other participant in current DM
+        let pendingFiles = []; // files queued for upload
+        const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+
         const originalTitle = document.title;
-        let currentSessionFilter = 'current'; // 'current', 'all', or session ID
 
         // --- DOM refs ---
         const messagesEl = document.getElementById('messages');
@@ -83,13 +130,17 @@
         const participantStatusEl = document.getElementById('participant-status');
         const typingIndicator = document.getElementById('typing-indicator');
         const typingSender = typingIndicator.querySelector('.typing-sender');
-        const historyToggle = document.getElementById('history-toggle');
         const watcherStatus = document.getElementById('watcher-status');
         const watcherBtn = document.getElementById('watcher-btn');
         const searchBar = document.getElementById('search-bar');
         const searchInput = document.getElementById('search-input');
         const searchCount = document.getElementById('search-count');
         const searchClose = document.getElementById('search-close');
+        const fileInput = document.getElementById('file-input');
+        const attachBtn = document.getElementById('attach-btn');
+        const filePreview = document.getElementById('file-preview');
+        const dropOverlay = document.getElementById('drop-overlay');
+        const convoSearch = document.getElementById('convo-search');
         let sessionActive = false;
         const senderBtns = document.querySelectorAll('.sender-btn');
 
@@ -211,15 +262,6 @@
             } catch (e) { console.error('Session toggle failed:', e); }
         });
 
-        // --- History toggle (this session / all) ---
-        historyToggle.addEventListener('click', async () => {
-            currentSessionFilter = currentSessionFilter === 'current' ? 'all' : 'current';
-            historyToggle.textContent = currentSessionFilter === 'current' ? 'This session' : 'All history';
-            historyToggle.classList.toggle('showing-all', currentSessionFilter === 'all');
-            messagesEl.innerHTML = '';
-            lastMessageId = 0;
-            await fetchMessages();
-        });
 
         // --- Watcher controls ---
         watcherBtn.addEventListener('click', async () => {
@@ -349,6 +391,31 @@
                     return;
                 }
             }
+
+            // Slash command autocomplete
+            if (inputEl.value.startsWith('/') && inputEl.selectionStart === inputEl.value.length) {
+                const q = inputEl.value.slice(1).toLowerCase();
+                const filtered = Object.entries(SLASH_COMMANDS).filter(([cmd]) => cmd.slice(1).startsWith(q));
+                if (filtered.length > 0 && inputEl.value.indexOf(' ') === -1) {
+                    mentionPopup.innerHTML = '';
+                    mentionSelected = 0;
+                    filtered.forEach(([cmd, info], i) => {
+                        const div = document.createElement('div');
+                        div.className = 'mention-option' + (i === 0 ? ' selected' : '');
+                        div.innerHTML = `<strong>${cmd}</strong> <span style="color:var(--text-dim);font-size:0.75rem">${info.desc}</span>`;
+                        div.addEventListener('mousedown', (e) => {
+                            e.preventDefault();
+                            inputEl.value = cmd + ' ';
+                            inputEl.focus();
+                            hideMentionPopup();
+                        });
+                        mentionPopup.appendChild(div);
+                    });
+                    mentionPopup.classList.remove('hidden');
+                    return;
+                }
+            }
+
             hideMentionPopup();
         });
 
@@ -380,12 +447,147 @@
             setTimeout(hideMentionPopup, 150);
         });
 
+        // --- Slash commands ---
+        const SLASH_COMMANDS = {
+            '/help': { desc: 'Show available commands', handler: cmdHelp },
+            '/status': { desc: 'Show participant states', handler: cmdStatus },
+            '/clear': { desc: 'Clear chat display', handler: cmdClear },
+            '/session': { desc: 'Start or end session (/session start|end)', handler: cmdSession },
+            '/watcher': { desc: 'Control watcher (/watcher start|restart|stop)', handler: cmdWatcher },
+            '/mute': { desc: 'Mute a participant (/mute Soren)', handler: cmdMute },
+            '/unmute': { desc: 'Unmute a participant (/unmute Soren)', handler: cmdUnmute },
+        };
+
+        function showSystemLocal(text) {
+            const div = document.createElement('div');
+            div.className = 'message from-system local-cmd';
+            div.innerHTML = `<div class="msg-content">${renderMarkdown(text)}</div>`;
+            messagesEl.appendChild(div);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+
+        function cmdHelp() {
+            const lines = Object.entries(SLASH_COMMANDS).map(([cmd, info]) => `**${cmd}** — ${info.desc}`);
+            showSystemLocal(lines.join('\n'));
+        }
+
+        async function cmdStatus() {
+            try {
+                const res = await fetch(`${API}?action=state`, {cache: 'no-store'});
+                const data = await res.json();
+                if (!data.ok) { showSystemLocal('Failed to fetch state.'); return; }
+                const s = data.state;
+                const lines = [
+                    `**Session:** ${s.session_active === 'true' ? 'Active' : 'Inactive'}`,
+                    `**Exchanges:** ${s.exchange_counter}/${s.exchange_cap}`,
+                    `**Rob:** ${s.rob_focused === 'true' ? 'present' : 'away'}`,
+                    `**Soren:** ${s.participant_status_Soren || 'idle'}`,
+                    `**Atlas:** ${s.participant_status_Atlas || 'idle'}`,
+                    `**Web:** ${s.participant_status_Web || 'idle'}`,
+                    `**Ellison:** ${s.participant_status_Ellison || 'idle'}`,
+                ];
+                showSystemLocal(lines.join('\n'));
+            } catch (e) { showSystemLocal('Error: ' + e.message); }
+        }
+
+        function cmdClear() {
+            messagesEl.innerHTML = '';
+            lastMessageId = 0;
+            showSystemLocal('Chat display cleared. Messages still exist in the database.');
+        }
+
+        async function cmdSession(args) {
+            const sub = (args || '').trim().toLowerCase();
+            if (sub === 'start') {
+                await fetch(API, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({action:'session', state:'active'}) });
+                await fetch(API, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({from:'System', content:'Session started by Rob via /session.'}) });
+                showSystemLocal('Session started.');
+            } else if (sub === 'end') {
+                if (!confirm('End the current session?')) return;
+                await fetch(API, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({action:'session', state:'paused', close_session:true}) });
+                await fetch(API, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({from:'System', content:'Session ended by Rob via /session.'}) });
+                showSystemLocal('Session ended.');
+            } else {
+                showSystemLocal('Usage: **/session start** or **/session end**');
+            }
+            fetchState();
+        }
+
+        async function cmdWatcher(args) {
+            const sub = (args || '').trim().toLowerCase();
+            if (!['start', 'restart', 'stop'].includes(sub)) {
+                showSystemLocal('Usage: **/watcher start|restart|stop**');
+                return;
+            }
+            await fetch(API, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({action:'watcher_control', command:sub}) });
+            showSystemLocal(`Watcher ${sub} command sent.`);
+        }
+
+        function cmdMute(args) {
+            const name = (args || '').trim();
+            if (!name) { showSystemLocal('Usage: **/mute Soren**'); return; }
+            showSystemLocal(`Mute for ${name} noted. (Server-side mute not yet implemented — see GitHub Issue #1)`);
+        }
+
+        function cmdUnmute(args) {
+            const name = (args || '').trim();
+            if (!name) { showSystemLocal('Usage: **/unmute Soren**'); return; }
+            showSystemLocal(`Unmute for ${name} noted. (Server-side unmute not yet implemented — see GitHub Issue #1)`);
+        }
+
+        function handleSlashCommand(input) {
+            const parts = input.trim().split(/\s+/);
+            const cmd = parts[0].toLowerCase();
+            const args = parts.slice(1).join(' ');
+            const entry = SLASH_COMMANDS[cmd];
+            if (!entry) {
+                showSystemLocal(`Unknown command: **${escapeHtml(cmd)}**. Type **/help** for available commands.`);
+                return true;
+            }
+            entry.handler(args);
+            return true;
+        }
+
         // --- Send message ---
         async function sendMessage() {
             const content = inputEl.value.trim();
-            if (!content) return;
+            if (!content && pendingFiles.length === 0) return;
+
+            // Slash command intercept (group only)
+            if (content.startsWith('/') && currentView === 'group') {
+                handleSlashCommand(content);
+                inputEl.value = '';
+                inputEl.focus();
+                return;
+            }
 
             sendBtn.disabled = true;
+
+            // DM mode
+            if (currentView !== 'group') {
+                try {
+                    const payload = { action: 'dm', from: currentSender, to: dmRecipient, content: content || '', conversation_id: currentView };
+                    const res = await fetch(API, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    const data = await res.json();
+                    if (data.ok) {
+                        inputEl.value = '';
+                        if (pendingFiles.length > 0) {
+                            const msgId = data.dm_message ? data.dm_message.id : null;
+                            if (msgId) await uploadFiles(msgId, true);
+                        }
+                        await fetchDmMessages(currentView);
+                    }
+                } catch (e) { console.error('DM send failed:', e); }
+                sendBtn.disabled = false;
+                inputEl.focus();
+                return;
+            }
+
+            // Group mode
             try {
                 const res = await fetch(API, {
                     method: 'POST',
@@ -395,6 +597,10 @@
                 const data = await res.json();
                 if (data.ok) {
                     inputEl.value = '';
+                    if (pendingFiles.length > 0) {
+                        const msgId = data.message ? data.message.id : null;
+                        if (msgId) await uploadFiles(msgId, false);
+                    }
                     await fetchMessages();
                 } else {
                     alert('Error: ' + data.error);
@@ -404,7 +610,7 @@
                 statusDot.className = 'status-dot offline';
             } finally {
                 sendBtn.disabled = false;
-                inputEl.blur();
+                inputEl.focus();
             }
         }
 
@@ -429,8 +635,6 @@
         async function fetchMessages() {
             try {
                 let url = `${API}?action=messages&since=${lastMessageId}`;
-                if (currentSessionFilter === 'current') url += '&session=current';
-                else if (currentSessionFilter !== 'all') url += `&session=${currentSessionFilter}`;
                 const res = await fetch(url, {cache: 'no-store'});
                 const data = await res.json();
                 // Status dot reflects connection health, not session state (fetchState handles session)
@@ -440,7 +644,7 @@
                     // Check if user is near bottom before appending
                     const wasNearBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 80;
 
-                    data.messages.forEach(renderMessage);
+                    data.messages.forEach(m => { addTokenEstimate(m); renderMessage(m); });
                     lastMessageId = data.messages[data.messages.length - 1].id;
 
                     // Only auto-scroll if user was already near the bottom
@@ -475,7 +679,7 @@
             }
         }
 
-        // --- Fetch session state (every 5th poll = ~15s) ---
+        // --- Fetch session state (every poll cycle) ---
         async function fetchState() {
             try {
                 const res = await fetch(`${API}?action=state`, {cache: 'no-store'});
@@ -485,6 +689,11 @@
                 const s = data.state;
                 const active = s.session_active === 'true';
                 sessionActive = active;
+                const newSessionId = s.current_session_id ? parseInt(s.current_session_id) : null;
+                if (newSessionId !== currentSessionId) {
+                    currentSessionId = newSessionId;
+                    tokenAccum = 0; // Reset token counter on session change
+                }
                 sessionBadge.textContent = active ? 'SESSION ACTIVE' : 'SESSION OFF';
                 sessionBadge.className = 'badge ' + (active ? 'active' : 'paused');
                 statusDot.className = 'status-dot ' + (active ? 'online' : 'offline');
@@ -523,10 +732,37 @@
                 watcherBtn.className = `control-btn watcher-ctl ${watcherAlive ? 'running' : ''}`;
 
                 updateTypingIndicator(s);
+                updateTokenIndicators();
 
             } catch (e) {
                 console.error('State fetch failed:', e);
             }
+        }
+
+        // Track token accumulation from current-session messages only (mirrors what AIs see)
+        let tokenAccum = 0;
+        let currentSessionId = null;
+        function addTokenEstimate(msg) {
+            // Only count tokens for messages in the current session (what AIs actually see)
+            if (currentSessionId && msg.session_id != currentSessionId) return;
+            tokenAccum += (msg.token_estimate || Math.ceil((msg.content || '').length / 4));
+        }
+
+        function updateTokenIndicators() {
+            const contextMax = 200000; // Sonnet context window
+            const personaOverhead = { Soren: 8000, Atlas: 8000 };
+            const container = document.getElementById('token-indicators');
+            if (!container) return;
+            container.innerHTML = '';
+            ['Soren', 'Atlas'].forEach(p => {
+                const total = tokenAccum + (personaOverhead[p] || 0);
+                const pct = Math.min(100, Math.round((total / contextMax) * 100));
+                const bar = document.createElement('div');
+                bar.className = 'token-bar';
+                bar.title = `${p}: ~${Math.round(total/1000)}k / ${contextMax/1000}k tokens`;
+                bar.innerHTML = `<span class="token-label">${p}</span><div class="token-track"><div class="token-fill" style="width:${pct}%"></div></div><span class="token-pct">${pct}%</span>`;
+                container.appendChild(bar);
+            });
         }
 
         function updateTypingIndicator(stateObj) {
@@ -637,7 +873,19 @@
                 .replace(/@(Rob|Soren|Atlas|Web|Ellison|all)\b/gi, '<span class="mention">@$1</span>');
         }
 
+        let sessionDividerInserted = false;
         function renderMessage(msg) {
+            // Insert session divider when transitioning from old messages to current session
+            if (!sessionDividerInserted && currentSessionId && msg.session_id == currentSessionId) {
+                if (messagesEl.children.length > 0) {
+                    const divider = document.createElement('div');
+                    divider.className = 'session-divider';
+                    divider.innerHTML = '<span>Current Session</span>';
+                    messagesEl.appendChild(divider);
+                }
+                sessionDividerInserted = true;
+            }
+
             const div = document.createElement('div');
             const sender = (msg.participant && msg.participant !== '') ? msg.participant : (msg.from || 'Unknown');
             const knownSenders = ['rob', 'soren', 'atlas', 'web', 'system', 'ellison'];
@@ -645,6 +893,7 @@
             const senderClass = knownSenders.includes(senderKey) ? `from-${senderKey}` : 'from-guest';
             div.className = `message ${senderClass}`;
             div.dataset.id = msg.id;
+            div.dataset.timestamp = msg.timestamp;
 
             const dt = parseTimestamp(msg.timestamp);
             const time = dt ? dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
@@ -658,20 +907,109 @@
             // Check if this is a tool approval request from System
             const isToolApproval = sender === 'System' && msg.content.includes('Tool access requested');
 
+            // Render file attachments
+            let attachmentsHtml = '';
+            if (msg.attachments && msg.attachments.length > 0) {
+                attachmentsHtml = '<div class="msg-attachments">' + msg.attachments.map(att => {
+                    const isImage = att.mime_type && att.mime_type.startsWith('image/');
+                    if (isImage) {
+                        return `<div><img class="msg-attachment-image" src="uploads/${escapeHtml(att.filename)}" alt="${escapeHtml(att.original_name)}" onclick="window.open('uploads/${escapeHtml(att.filename)}', '_blank')" /></div>`;
+                    }
+                    return `<a class="msg-attachment" href="uploads/${escapeHtml(att.filename)}" target="_blank" download>
+                        <span class="msg-attachment-icon">&#x1F4C4;</span>
+                        <div class="msg-attachment-info">
+                            <span class="msg-attachment-name">${escapeHtml(att.original_name)}</span>
+                            <span class="msg-attachment-size">${formatFileSize(att.size_bytes)}</span>
+                        </div>
+                    </a>`;
+                }).join('') + '</div>';
+            }
+
+            const avatarLetter = sender.charAt(0).toUpperCase();
+            const avatarColorVar = knownSenders.includes(senderKey) ? `var(--${senderKey})` : 'var(--text-dim)';
+
             div.innerHTML = `
                 <div class="msg-header">
+                    <span class="msg-avatar" style="background: ${avatarColorVar}">${escapeHtml(avatarLetter)}</span>
                     <span class="msg-sender">${escapeHtml(sender)}</span>
                     <span class="msg-time">${time}</span>
                 </div>
                 <div class="msg-content">${contentHtml}</div>
+                ${attachmentsHtml}
                 ${safeMentions ? `<div class="msg-mentions">&rarr; ${safeMentions}</div>` : ''}
-                ${isToolApproval ? `<div class="tool-approval-buttons">
+                ${isToolApproval && currentSender === 'Rob' ? `<div class="tool-approval-buttons">
                     <button class="approve-btn" onclick="sendToolApproval('approve', this)">Approve</button>
                     <button class="deny-btn" onclick="sendToolApproval('deny', this)">Deny</button>
-                </div>` : ''}
+                </div>` : (isToolApproval ? '<div class="tool-approval-status">Awaiting Rob\'s approval</div>' : '')}
             `;
 
+            // Reaction bar
+            const reactionBar = document.createElement('div');
+            reactionBar.className = 'reaction-bar';
+            const reactionTrigger = document.createElement('button');
+            reactionTrigger.className = 'reaction-trigger';
+            reactionTrigger.textContent = '+';
+            reactionTrigger.title = 'Add reaction';
+            reactionTrigger.addEventListener('click', (e) => {
+                e.stopPropagation();
+                showReactionPicker(div, reactionBar);
+            });
+            reactionBar.appendChild(reactionTrigger);
+            div.appendChild(reactionBar);
+
             messagesEl.appendChild(div);
+
+            // Message grouping: hide header if same sender within 2 minutes
+            const prev = div.previousElementSibling;
+            if (prev && prev.querySelector('.msg-sender')?.textContent === sender) {
+                const prevTime = parseTimestamp(prev.dataset.timestamp);
+                if (prevTime && dt && (dt - prevTime) < 120000) {
+                    div.classList.add('continuation');
+                }
+            }
+        }
+
+        const REACTIONS = ['\u{1F44D}', '\u2705', '\u{1F440}', '\u2753', '\u{1F3AF}', '\u{1F4A1}'];
+
+        function showReactionPicker(msgEl, bar) {
+            // Remove any existing picker
+            document.querySelectorAll('.reaction-picker').forEach(p => p.remove());
+            const picker = document.createElement('div');
+            picker.className = 'reaction-picker';
+            REACTIONS.forEach(emoji => {
+                const btn = document.createElement('button');
+                btn.textContent = emoji;
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    toggleReaction(msgEl, bar, emoji);
+                    picker.remove();
+                });
+                picker.appendChild(btn);
+            });
+            bar.appendChild(picker);
+            // Close picker on outside click
+            setTimeout(() => {
+                document.addEventListener('click', function closePicker() {
+                    picker.remove();
+                    document.removeEventListener('click', closePicker);
+                }, { once: true });
+            }, 0);
+        }
+
+        function toggleReaction(msgEl, bar, emoji) {
+            const msgId = msgEl.dataset.id;
+            // Check if reaction already exists
+            let existing = bar.querySelector(`.reaction-chip[data-emoji="${emoji}"]`);
+            if (existing) {
+                existing.remove();
+            } else {
+                const chip = document.createElement('span');
+                chip.className = 'reaction-chip';
+                chip.dataset.emoji = emoji;
+                chip.textContent = emoji;
+                chip.addEventListener('click', () => chip.remove());
+                bar.insertBefore(chip, bar.querySelector('.reaction-trigger'));
+            }
         }
 
         function escapeHtml(str) {
@@ -747,10 +1085,268 @@
         window.addEventListener('focus', startHeartbeat);
         window.addEventListener('blur', stopHeartbeat);
 
+        // --- Sidebar: fetch & render conversations ---
+        async function fetchConversations() {
+            try {
+                const res = await fetch(`${API}?action=conversations&for=${encodeURIComponent(currentSender)}`, {cache: 'no-store'});
+                const data = await res.json();
+                if (data.ok) {
+                    conversations = data.conversations || [];
+                    renderConversations();
+                }
+            } catch (e) { /* non-critical */ }
+        }
+
+        function renderConversations() {
+            const list = document.getElementById('conversation-list');
+            const groupEntry = list.querySelector('[data-type="group"]');
+            list.innerHTML = '';
+            if (groupEntry) {
+                groupEntry.classList.toggle('active', currentView === 'group');
+                groupEntry.onclick = () => switchToGroup();
+                list.appendChild(groupEntry);
+            }
+
+            const searchQuery = (convoSearch.value || '').toLowerCase().trim();
+
+            conversations.forEach(c => {
+                const otherName = c.other_participant;
+
+                // Filter by sidebar search
+                if (searchQuery && !otherName.toLowerCase().includes(searchQuery)) return;
+
+                const div = document.createElement('div');
+                div.className = `convo-item${currentView == c.id ? ' active' : ''}`;
+                div.dataset.type = 'dm';
+                div.dataset.id = c.id;
+
+                const knownSendersList = ['rob', 'soren', 'atlas', 'web', 'ellison'];
+                const senderKey = otherName.toLowerCase().replace(/[^a-z0-9]/g, '-');
+                const colorVar = knownSendersList.includes(senderKey) ? `var(--${senderKey})` : 'var(--text-dim)';
+                const letter = otherName.charAt(0).toUpperCase();
+
+                const time = c.last_message_at ? new Date(c.last_message_at.replace(/Z+$/, '') + 'Z').toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '';
+
+                div.innerHTML = `
+                    <div class="convo-avatar" style="background: ${colorVar}">${escapeHtml(letter)}</div>
+                    <div class="convo-info">
+                        <div class="convo-name">${escapeHtml(otherName)}</div>
+                        <div class="convo-preview">${escapeHtml(c.last_message_preview || 'No messages yet')}</div>
+                    </div>
+                    <div class="convo-meta">
+                        ${time ? `<span class="convo-time">${time}</span>` : ''}
+                        ${c.unread_count > 0 ? `<span class="convo-unread">${c.unread_count}</span>` : ''}
+                    </div>
+                `;
+                div.addEventListener('click', () => switchToDm(c.id, otherName));
+                list.appendChild(div);
+            });
+        }
+
+        // Filter sidebar on search input
+        convoSearch.addEventListener('input', () => renderConversations());
+
+        // --- View switching ---
+        function switchToGroup() {
+            currentView = 'group';
+            dmRecipient = null;
+            lastMessageId = 0;
+            tokenAccum = 0;
+            sessionDividerInserted = false;
+            messagesEl.innerHTML = '';
+            document.querySelectorAll('.convo-item').forEach(el => el.classList.remove('active'));
+            document.querySelector('[data-type="group"]')?.classList.add('active');
+
+            // Show group-specific UI
+            document.getElementById('sender-select').style.display = '';
+            document.getElementById('participant-status').style.display = '';
+            document.getElementById('token-indicators').style.display = '';
+            document.querySelector('#main-panel header h1').textContent = 'Claude Collab';
+
+            fetchMessages();
+            fetchState();
+        }
+
+        async function switchToDm(conversationId, otherName) {
+            currentView = conversationId;
+            dmRecipient = otherName;
+            lastDmId = 0;
+            messagesEl.innerHTML = '';
+            document.querySelectorAll('.convo-item').forEach(el => el.classList.remove('active'));
+            document.querySelector(`[data-id="${conversationId}"]`)?.classList.add('active');
+
+            // Hide group-specific UI
+            document.getElementById('sender-select').style.display = 'none';
+            document.getElementById('participant-status').style.display = 'none';
+            document.getElementById('token-indicators').style.display = 'none';
+            document.querySelector('#main-panel header h1').textContent = `DM: ${otherName}`;
+
+            // Mark as read
+            fetch(API, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({action: 'dm_read', conversation_id: conversationId, reader: currentSender})
+            }).catch(() => {});
+
+            await fetchDmMessages(conversationId);
+        }
+
+        async function fetchDmMessages(conversationId) {
+            try {
+                const res = await fetch(`${API}?action=dm_messages&conversation_id=${conversationId}&since=${lastDmId}`, {cache: 'no-store'});
+                const data = await res.json();
+                if (data.ok && data.dm_messages && data.dm_messages.length > 0) {
+                    const wasNearBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 80;
+                    data.dm_messages.forEach(msg => {
+                        renderMessage({
+                            id: 'dm-' + msg.id,
+                            participant: msg.sender,
+                            content: msg.content,
+                            timestamp: msg.timestamp,
+                            mentions: [],
+                            attachments: msg.attachments || []
+                        });
+                    });
+                    lastDmId = data.dm_messages[data.dm_messages.length - 1].id;
+                    if (wasNearBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
+                }
+            } catch (e) { console.error('DM fetch failed:', e); }
+        }
+
+        // --- File upload (drag/drop + button) ---
+        attachBtn.addEventListener('click', () => fileInput.click());
+
+        fileInput.addEventListener('change', () => {
+            addFiles(Array.from(fileInput.files));
+            fileInput.value = '';
+        });
+
+        // Drag and drop on the entire input area
+        const inputArea = document.getElementById('input-area');
+        inputArea.style.position = 'relative';
+
+        inputArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropOverlay.classList.remove('hidden');
+        });
+        inputArea.addEventListener('dragleave', (e) => {
+            if (!inputArea.contains(e.relatedTarget)) dropOverlay.classList.add('hidden');
+        });
+        inputArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropOverlay.classList.add('hidden');
+            addFiles(Array.from(e.dataTransfer.files));
+        });
+
+        function addFiles(files) {
+            for (const file of files) {
+                if (file.size > MAX_FILE_SIZE) {
+                    if (!confirm(`${file.name} is ${formatFileSize(file.size)} (max ${formatFileSize(MAX_FILE_SIZE)}). Upload anyway?`)) continue;
+                }
+                pendingFiles.push(file);
+            }
+            renderFilePreview();
+        }
+
+        function renderFilePreview() {
+            filePreview.innerHTML = '';
+            if (pendingFiles.length === 0) {
+                filePreview.classList.add('hidden');
+                return;
+            }
+            filePreview.classList.remove('hidden');
+            pendingFiles.forEach((file, i) => {
+                const item = document.createElement('div');
+                item.className = 'file-preview-item';
+                item.innerHTML = `
+                    <span>${escapeHtml(file.name)} (${formatFileSize(file.size)})</span>
+                    <span class="file-remove" data-idx="${i}">&times;</span>
+                `;
+                item.querySelector('.file-remove').addEventListener('click', () => {
+                    pendingFiles.splice(i, 1);
+                    renderFilePreview();
+                });
+                filePreview.appendChild(item);
+            });
+        }
+
+        function formatFileSize(bytes) {
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+            return (bytes / 1048576).toFixed(1) + ' MB';
+        }
+
+        async function uploadFiles(messageId, isDm) {
+            for (const file of pendingFiles) {
+                const formData = new FormData();
+                formData.append('file', file);
+                formData.append('action', 'upload');
+                formData.append('uploaded_by', currentSender);
+                if (isDm) {
+                    formData.append('dm_message_id', messageId);
+                } else {
+                    formData.append('message_id', messageId);
+                }
+                if (file.size > MAX_FILE_SIZE) {
+                    formData.append('override_cap', 'true');
+                }
+                try {
+                    await fetch(API, { method: 'POST', body: formData });
+                } catch (e) { console.error('Upload failed:', e); }
+            }
+            pendingFiles = [];
+            renderFilePreview();
+        }
+
+        // --- New DM modal ---
+        document.getElementById('new-dm-btn').addEventListener('click', () => {
+            renderNewDmModal();
+            document.getElementById('new-dm-modal').classList.remove('hidden');
+        });
+
+        function renderNewDmModal() {
+            const participants = ['Rob', 'Soren', 'Atlas', 'Web', 'Ellison'];
+            const list = document.querySelector('.dm-participant-list');
+            list.innerHTML = '';
+            participants.filter(p => p !== currentSender).forEach(p => {
+                const knownSendersList = ['rob', 'soren', 'atlas', 'web', 'ellison'];
+                const senderKey = p.toLowerCase();
+                const colorVar = knownSendersList.includes(senderKey) ? `var(--${senderKey})` : 'var(--text-dim)';
+                const div = document.createElement('div');
+                div.className = 'dm-participant-option';
+                div.innerHTML = `<span class="convo-avatar" style="background: ${colorVar}; width: 28px; height: 28px; font-size: 0.75rem;">${p.charAt(0)}</span> ${escapeHtml(p)}`;
+                div.addEventListener('click', async () => {
+                    document.getElementById('new-dm-modal').classList.add('hidden');
+                    try {
+                        const res = await fetch(API, {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({action: 'create_conversation', from: currentSender, with: p})
+                        });
+                        const data = await res.json();
+                        if (data.ok) {
+                            await fetchConversations();
+                            switchToDm(data.conversation.id, p);
+                        }
+                    } catch (e) { console.error('Create DM failed:', e); }
+                });
+                list.appendChild(div);
+            });
+        }
+
+        // Close modal on backdrop click
+        document.getElementById('new-dm-modal').addEventListener('click', (e) => {
+            if (e.target === e.currentTarget) {
+                e.currentTarget.classList.add('hidden');
+            }
+        });
+
         // --- Polling (with overlap guard + visibility catch-up + auto-start) ---
         async function startPolling(intervalMs = 2000) {
+            await fetchState(); // Must run first so currentSessionId is set before rendering messages
             await fetchMessages();
-            await fetchState();
+            await fetchConversations();
+            renderNewDmModal();
 
             // Auto-start session if not active
             if (!sessionActive) {
@@ -774,8 +1370,13 @@
                 if (isPolling) return;
                 isPolling = true;
                 try {
-                    await fetchMessages();
+                    if (currentView === 'group') {
+                        await fetchMessages();
+                    } else {
+                        await fetchDmMessages(currentView);
+                    }
                     await fetchState();
+                    fetchConversations(); // Always refresh sidebar (non-blocking)
                 } finally {
                     isPolling = false;
                 }
@@ -784,8 +1385,13 @@
             // Catch up immediately when tab becomes visible (Chrome throttles bg tabs)
             document.addEventListener('visibilitychange', () => {
                 if (!document.hidden && !isPolling) {
-                    fetchMessages();
+                    if (currentView === 'group') {
+                        fetchMessages();
+                    } else {
+                        fetchDmMessages(currentView);
+                    }
                     fetchState();
+                    fetchConversations();
                 }
             });
         }
