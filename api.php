@@ -41,9 +41,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 }
 
 // --- Participant Registry (single source of truth) ---
-const PARTICIPANTS_ALL = ['Rob', 'Soren', 'Atlas', 'Web', 'System', 'Ellison'];
-const PARTICIPANTS_AI  = ['Soren', 'Atlas', 'Ellison'];  // AI participants (for status, routing)
-const PARTICIPANTS_ACTIVE_AI = ['Soren', 'Atlas'];        // Auto-responding AIs (@all targets)
+const PARTICIPANTS_ALL = ['Rob', 'Soren', 'Atlas', 'Morgan', 'System', 'Ellison'];
+const PARTICIPANTS_AI  = ['Soren', 'Atlas', 'Morgan', 'Ellison'];  // AI participants (for status, routing)
+const PARTICIPANTS_ACTIVE_AI = ['Soren', 'Atlas', 'Morgan'];       // @team targets (active auto-responding AIs)
 
 // --- Database ---
 $DB_PATH = __DIR__ . '/chatroom.db';
@@ -962,18 +962,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         }
 
-        // Auto-detect @mentions (@all expands to active AI participants)
-        // Build mention regex dynamically from participant registry
-        $mentionPattern = implode('|', array_map('preg_quote', PARTICIPANTS_ALL)) . '|all';
+        // Auto-detect @mentions
+        // @all = all AI participants (Soren, Atlas, Morgan, Ellison)
+        // @team = active AI participants only (Soren, Atlas, Morgan)
+        $mentionPattern = implode('|', array_map('preg_quote', PARTICIPANTS_ALL)) . '|all|team';
         preg_match_all('/@(' . $mentionPattern . ')\b/i', $content, $matches);
         $raw = $input['mentions'] ?? $matches[1] ?? [];
         // Build canonical name map dynamically
-        $canonicalNames = ['all' => 'all'];
+        $canonicalNames = ['all' => 'all', 'team' => 'team'];
         foreach (PARTICIPANTS_ALL as $p) { $canonicalNames[strtolower($p)] = $p; }
         $expanded = [];
         foreach ($raw as $m) {
             $normalized = $canonicalNames[strtolower($m)] ?? $m;
             if (strtolower($normalized) === 'all') {
+                foreach (PARTICIPANTS_AI as $ai) { $expanded[] = $ai; }
+            } elseif (strtolower($normalized) === 'team') {
                 foreach (PARTICIPANTS_ACTIVE_AI as $ai) { $expanded[] = $ai; }
             } else {
                 $expanded[] = $normalized;
@@ -1429,10 +1432,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $roomMembersStmt = $db->prepare("SELECT participant FROM room_members WHERE room_id = ?");
         $roomMembersStmt->execute([$roomId]);
         $roomMemberNames = $roomMembersStmt->fetchAll(PDO::FETCH_COLUMN);
-        $mentionPattern = implode('|', array_map('preg_quote', $roomMemberNames)) . '|all';
+        $mentionPattern = implode('|', array_map('preg_quote', $roomMemberNames)) . '|all|team';
         preg_match_all('/@(' . $mentionPattern . ')\b/i', $content, $matches);
         $raw = $matches[1] ?? [];
-        $canonicalNames = ['all' => 'all'];
+        $canonicalNames = ['all' => 'all', 'team' => 'team'];
         foreach (PARTICIPANTS_ALL as $p) { $canonicalNames[strtolower($p)] = $p; }
         $expanded = [];
         foreach ($raw as $m) {
@@ -1441,6 +1444,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 // @all in a room = all AI members of this room
                 foreach ($roomMemberNames as $rm) {
                     if (in_array($rm, PARTICIPANTS_AI)) $expanded[] = $rm;
+                }
+            } elseif (strtolower($normalized) === 'team') {
+                // @team in a room = active AI members of this room
+                foreach ($roomMemberNames as $rm) {
+                    if (in_array($rm, PARTICIPANTS_ACTIVE_AI)) $expanded[] = $rm;
                 }
             } else {
                 $expanded[] = $normalized;

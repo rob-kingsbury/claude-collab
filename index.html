@@ -106,8 +106,7 @@
     <!-- New Room modal -->
     <div id="new-room-modal" class="modal-overlay hidden">
         <div class="modal-content">
-            <h3>Create Room</h3>
-            <input type="text" id="room-name-input" placeholder="Room name..." maxlength="50" />
+            <h3>New Message</h3>
             <div class="room-member-select">
                 <p class="member-label">Members:</p>
                 <div id="room-member-checkboxes"></div>
@@ -126,7 +125,7 @@
         const PARTICIPANTS_ALL = ['Rob', 'Soren', 'Atlas', 'Morgan', 'Ellison'];
         const PARTICIPANTS_AI = ['Soren', 'Atlas', 'Morgan', 'Ellison'];
         const PARTICIPANTS_ACTIVE_AI = ['Soren', 'Atlas', 'Morgan'];
-        const MENTION_NAMES = [...PARTICIPANTS_ALL, 'all'];
+        const MENTION_NAMES = [...PARTICIPANTS_ALL, 'all', 'team'];
         const MENTION_REGEX = new RegExp('@(' + PARTICIPANTS_ALL.join('|') + '|all)\\b', 'gi');
         let currentSender = 'Rob';
         let lastMessageId = 0;
@@ -1399,7 +1398,6 @@
         document.getElementById('new-room-btn').addEventListener('click', () => {
             renderRoomModal();
             document.getElementById('new-room-modal').classList.remove('hidden');
-            document.getElementById('room-name-input').focus();
         });
 
         function renderRoomModal() {
@@ -1407,25 +1405,23 @@
             container.innerHTML = '';
             PARTICIPANTS_ALL.filter(p => p !== 'Rob').forEach(p => {
                 const key = p.toLowerCase();
-                const checked = PARTICIPANTS_ACTIVE_AI.includes(p) ? 'checked' : '';
                 const label = document.createElement('label');
                 label.className = 'member-checkbox';
                 label.innerHTML = `
-                    <input type="checkbox" value="${p}" ${checked} />
+                    <input type="checkbox" value="${p}" />
                     <span class="member-avatar" style="background: var(--${key}, var(--text-dim))">${p.charAt(0)}</span>
                     <span>${escapeHtml(p)}</span>
                 `;
                 container.appendChild(label);
             });
-            document.getElementById('room-name-input').value = '';
         }
 
         document.getElementById('room-create-btn').addEventListener('click', async () => {
-            const name = document.getElementById('room-name-input').value.trim();
-            if (!name) { document.getElementById('room-name-input').focus(); return; }
-
             const checkboxes = document.querySelectorAll('#room-member-checkboxes input:checked');
-            const members = ['Rob', ...Array.from(checkboxes).map(cb => cb.value)];
+            if (checkboxes.length === 0) { alert('Select at least one participant.'); return; }
+            const otherMembers = Array.from(checkboxes).map(cb => cb.value);
+            const members = ['Rob', ...otherMembers];
+            const name = otherMembers.join(', ');
 
             try {
                 const res = await fetch(API, {
