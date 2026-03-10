@@ -200,6 +200,7 @@ function migrateDb(PDO $db): void {
     $stmt->execute(['watcher_heartbeat_at', '']);
     $stmt->execute(['watcher_pid', '']);
     $stmt->execute(['session_ended_explicitly', 'false']);
+    $stmt->execute(['conversation_state', 'active']);
 
     // Add conversations table
     $db->exec("
@@ -443,7 +444,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
             'count' => count($messages),
             'total' => (int)$total,
             'session_id' => getCurrentSessionId($db)
-        ]);
+        ], JSON_INVALID_UTF8_SUBSTITUTE);
         exit;
     }
 
@@ -502,7 +503,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
             'session_active' => $sessionActive,
             'rob_present' => $robPresent,
             'rob_typing' => $robTypingRecently
-        ]);
+        ], JSON_INVALID_UTF8_SUBSTITUTE);
         exit;
     }
 
@@ -525,7 +526,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
                 $m['read_by'] = json_decode($m['read_by'], true) ?? [];
             }
             unset($m);
-            echo json_encode(['ok' => true, 'mode' => 'since', 'messages' => $messages, 'count' => count($messages)]);
+            echo json_encode(['ok' => true, 'mode' => 'since', 'messages' => $messages, 'count' => count($messages)], JSON_INVALID_UTF8_SUBSTITUTE);
             exit;
         }
 
@@ -536,8 +537,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         $afterId = $summary ? (int)$summary['covers_up_to_message_id'] : 0;
         $recentLimit = 20;
 
-        $stmt = $db->prepare("SELECT * FROM messages WHERE id > ?$sessionFilter ORDER BY id DESC LIMIT ?");
-        $stmt->execute([$afterId, $recentLimit]);
+        $stmt = $db->prepare("SELECT * FROM messages WHERE id > ?$sessionFilter ORDER BY id DESC LIMIT " . (int)$recentLimit);
+        $stmt->execute([$afterId]);
         $messages = array_reverse($stmt->fetchAll()); // Reverse to chronological
 
         foreach ($messages as &$m) {
@@ -546,14 +547,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         }
         unset($m);
 
-        echo json_encode([
+        $result = json_encode([
             'ok' => true,
             'mode' => 'full',
             'summary' => $summary ? $summary['summary_text'] : null,
             'summary_covers_up_to' => $afterId,
             'messages' => $messages,
             'count' => count($messages)
-        ]);
+        ], JSON_INVALID_UTF8_SUBSTITUTE);
+        if ($result === false) {
+            http_response_code(500);
+            echo json_encode(['ok' => false, 'error' => 'JSON encoding failed: ' . json_last_error_msg()]);
+            exit;
+        }
+        echo $result;
         exit;
     }
 
@@ -604,7 +611,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
             'ok' => true,
             'sessions' => $sessions,
             'current_session_id' => getCurrentSessionId($db)
-        ]);
+        ], JSON_INVALID_UTF8_SUBSTITUTE);
         exit;
     }
 
@@ -639,7 +646,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         $stmt->execute([$for, $for, $for, $for]);
         $conversations = $stmt->fetchAll();
 
-        echo json_encode(['ok' => true, 'conversations' => $conversations]);
+        echo json_encode(['ok' => true, 'conversations' => $conversations], JSON_INVALID_UTF8_SUBSTITUTE);
         exit;
     }
 
@@ -687,7 +694,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
             'dm_messages' => $messages,
             'count' => count($messages),
             'conversation_id' => $conversationId
-        ]);
+        ], JSON_INVALID_UTF8_SUBSTITUTE);
         exit;
     }
 
@@ -715,7 +722,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         }
         unset($a);
 
-        echo json_encode(['ok' => true, 'attachments' => $attachments]);
+        echo json_encode(['ok' => true, 'attachments' => $attachments], JSON_INVALID_UTF8_SUBSTITUTE);
         exit;
     }
 
@@ -793,22 +800,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             setState($db, 'exchange_counter', '0');
             setState($db, 'last_rob_message_at', gmdate('Y-m-d\TH:i:s\Z'));
 
-            // Session activation: only match when the keyword IS the message (with optional punctuation)
-            // or appears as an explicit command. Prevents "don't stop working" from killing the session.
+            // Session/conversation control: keyword IS the message (with optional punctuation).
+            // Two tiers: thread-stop (conversation_state='stopped', session stays alive)
+            // and session-kill (session_active=false + conversation_state='stopped').
             $lower = trim(strtolower($content));
             $stripped = preg_replace('/[.!?,\s]+$/', '', $lower); // Remove trailing punctuation
             $startKeywords = ['good morning', 'startup', 'start session'];
-            $stopKeywords = ['stop', 'stop session', 'pause', 'pause session', 'halt', 'end session'];
+            $sessionKillKeywords = ['end session', 'stop session', 'pause session'];
+            $threadStopKeywords = ['stop', 'enough', 'halt', 'pause'];
+
             if (in_array($stripped, $startKeywords)) {
                 setState($db, 'session_active', 'true');
                 setState($db, 'exchange_counter', '0');
                 setState($db, 'session_ended_explicitly', 'false');
+                setState($db, 'conversation_state', 'active');
                 if (getCurrentSessionId($db) === null) {
                     startSession($db);
                 }
-            }
-            if (in_array($stripped, $stopKeywords)) {
+            } elseif (in_array($stripped, $sessionKillKeywords)) {
                 setState($db, 'session_active', 'false');
+                setState($db, 'conversation_state', 'stopped');
+            } elseif (in_array($stripped, $threadStopKeywords)) {
+                setState($db, 'conversation_state', 'stopped');
+            }
+
+            // Auto-clear conversation stop on substantive Rob message
+            $allControlWords = array_merge($startKeywords, $sessionKillKeywords, $threadStopKeywords);
+            $ignoreWords = ['approve', 'approved', 'deny', 'denied', 'yes', 'no', 'ok', 'okay',
+                            'k', 'thx', 'thanks', 'ty', 'np', 'lol', 'haha', 'nice'];
+            if (!in_array($stripped, $allControlWords) &&
+                !in_array($stripped, $ignoreWords) &&
+                getState($db, 'conversation_state') === 'stopped') {
+                setState($db, 'conversation_state', 'active');
             }
         } else if ($from !== 'System') {
             // Atomic increment to prevent race between concurrent AI responses
@@ -822,7 +845,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $message['mentions'] = json_decode($message['mentions'], true) ?? [];
         $message['read_by'] = json_decode($message['read_by'], true) ?? [];
 
-        echo json_encode(['ok' => true, 'message' => $message]);
+        echo json_encode(['ok' => true, 'message' => $message], JSON_INVALID_UTF8_SUBSTITUTE);
         exit;
     }
 
@@ -962,6 +985,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
+    // --- Set conversation state (for watcher loop detection) ---
+    if ($action === 'set_conversation_state') {
+        $newState = $input['state'] ?? '';
+        if (!in_array($newState, ['active', 'stopped'])) {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'error' => 'State must be "active" or "stopped"']);
+            exit;
+        }
+        setState($db, 'conversation_state', $newState);
+        echo json_encode(['ok' => true, 'conversation_state' => $newState]);
+        exit;
+    }
+
     // --- Watcher control (start/stop from frontend) ---
     if ($action === 'watcher_control') {
         $command = $input['command'] ?? '';
@@ -972,7 +1008,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exec("taskkill /PID " . $watcherPid . " /F 2>&1", $out, $code);
             setState($db, 'watcher_pid', '');
             setState($db, 'watcher_heartbeat_at', '');
-            echo json_encode(['ok' => true, 'action' => 'stopped', 'output' => implode("\n", $out)]);
+            echo json_encode(['ok' => true, 'action' => 'stopped', 'output' => implode("\n", $out)], JSON_INVALID_UTF8_SUBSTITUTE);
             exit;
         }
 
@@ -1050,7 +1086,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute([$msgId]);
         $message = $stmt->fetch();
 
-        echo json_encode(['ok' => true, 'dm_message' => $message, 'conversation_id' => (int)$convo['id']]);
+        echo json_encode(['ok' => true, 'dm_message' => $message, 'conversation_id' => (int)$convo['id']], JSON_INVALID_UTF8_SUBSTITUTE);
         exit;
     }
 
@@ -1076,7 +1112,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         $convo = findOrCreateConversation($db, $from, $with);
-        echo json_encode(['ok' => true, 'conversation' => $convo]);
+        echo json_encode(['ok' => true, 'conversation' => $convo], JSON_INVALID_UTF8_SUBSTITUTE);
         exit;
     }
 
@@ -1202,7 +1238,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $attachment = $stmt->fetch();
         $attachment['url'] = 'uploads/' . $attachment['filename'];
 
-        echo json_encode(['ok' => true, 'attachment' => $attachment]);
+        echo json_encode(['ok' => true, 'attachment' => $attachment], JSON_INVALID_UTF8_SUBSTITUTE);
         exit;
     }
 
