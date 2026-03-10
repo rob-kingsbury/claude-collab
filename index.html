@@ -126,7 +126,7 @@
         const PARTICIPANTS_AI = ['Soren', 'Atlas', 'Morgan', 'Ellison'];
         const PARTICIPANTS_ACTIVE_AI = ['Soren', 'Atlas', 'Morgan'];
         const MENTION_NAMES = [...PARTICIPANTS_ALL, 'all', 'team'];
-        const MENTION_REGEX = new RegExp('@(' + PARTICIPANTS_ALL.join('|') + '|all)\\b', 'gi');
+        const MENTION_REGEX = new RegExp('@(' + MENTION_NAMES.join('|') + ')\\b', 'gi');
         let currentSender = 'Rob';
         let lastMessageId = 0;
         let isPolling = false;
@@ -858,9 +858,16 @@
         function updateTypingIndicator(stateObj) {
             const active = [];
 
+            // In a room, only show typing for room members; in lobby, show all
+            const currentRoom = currentRoomId !== null ? rooms.find(r => r.id === currentRoomId) : null;
+            const roomMembers = currentRoom ? (currentRoom.members || []) : null;
+
             // AI participants responding (status = busy)
             PARTICIPANTS_AI.forEach(p => {
-                if ((stateObj['participant_status_' + p] || 'idle') === 'busy') active.push({ name: p, verb: 'responding' });
+                if ((stateObj['participant_status_' + p] || 'idle') === 'busy') {
+                    if (roomMembers && !roomMembers.includes(p)) return; // skip non-members in rooms
+                    active.push({ name: p, verb: 'responding' });
+                }
             });
 
             // Rob typing (recent keystroke within 5s)

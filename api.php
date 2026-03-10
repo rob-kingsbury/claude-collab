@@ -40,6 +40,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit;
 }
 
+// --- UTF-8 sanitization ---
+function ensureUtf8(string $str): string {
+    // If already valid UTF-8, return as-is
+    if (mb_check_encoding($str, 'UTF-8')) return $str;
+    // Try Windows-1252 → UTF-8 (covers em-dash 0x97, smart quotes, etc.)
+    $converted = @mb_convert_encoding($str, 'UTF-8', 'Windows-1252');
+    if ($converted !== false) return $converted;
+    // Fallback: strip invalid bytes
+    return mb_convert_encoding($str, 'UTF-8', 'UTF-8');
+}
+
 // --- Participant Registry (single source of truth) ---
 const PARTICIPANTS_ALL = ['Rob', 'Soren', 'Atlas', 'Morgan', 'System', 'Ellison'];
 const PARTICIPANTS_AI  = ['Soren', 'Atlas', 'Morgan', 'Ellison'];  // AI participants (for status, routing)
@@ -943,7 +954,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // --- Post a message ---
     if ($action === 'post') {
         $from = trim($input['from'] ?? '');
-        $content = trim($input['content'] ?? '');
+        $content = ensureUtf8(trim($input['content'] ?? ''));
 
         if ($from === '') {
             http_response_code(400);
@@ -1248,7 +1259,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($action === 'dm') {
         $from = trim($input['from'] ?? '');
         $to = trim($input['to'] ?? '');
-        $content = trim($input['content'] ?? '');
+        $content = ensureUtf8(trim($input['content'] ?? ''));
 
         if ($from === '' || $to === '') {
             http_response_code(400);
@@ -1391,7 +1402,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($action === 'room_message') {
         $roomId = (int)($input['room_id'] ?? 0);
         $from = trim($input['from'] ?? '');
-        $content = trim($input['content'] ?? '');
+        $content = ensureUtf8(trim($input['content'] ?? ''));
 
         if ($roomId === 0) {
             http_response_code(400);

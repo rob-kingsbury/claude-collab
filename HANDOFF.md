@@ -1,105 +1,79 @@
-# Handoff -- 2026-03-10 (Session 6)
+# Handoff -- 2026-03-10 (Session 7)
 
 ## What Happened This Session
 
 ### Summary
-**UI revamp** (iMessage-style light theme), **lazy history loading**, **Morgan frontend integration**, **bug fixes** (Morgan mentions, attachment placeholders, exchange counter, room auto-clear), **collab audit** (34 findings, 0 critical), and **@all/@team mention routing**.
+**Stop signal detection** (automatic watcher enforcement), **file path hardcoding** in AI prompts, **infinite re-invocation fix** (empty-after-pipeline marking), **stop detection race condition fix**, **false positive prevention**, and **room routing loop fix**. Also managed the chatroom as Rob's proxy while he stepped away.
 
-### UI Revamp (Light Theme) -- Commit a0b273f
+### Automatic Stop Signal Detection -- watcher/router.js (not in git)
 
-Complete CSS rewrite from dark theme to iOS-inspired light palette.
+**Problem**: Rob's stop signals ("stop", "hold on", "enough", etc.) were only enforced via manual `conversation_state` toggle. AI participants could see the instructions but ignored them.
 
-| Element | Before | After |
-|---------|--------|-------|
-| Theme | Dark (#0c0c0f) | Light (#ffffff bg, #f2f2f7 surfaces) |
-| Messages | Full-width, left-border | iMessage bubbles: Rob right/blue, AI left/gray, System centered |
-| Sidebar | Room names + lock icons | Participant avatars + names (like iMessage contacts) |
-| Lobby | "#" / "Claude Collab" | Group SVG icon / "Everyone" |
-| Send button | "Send" text pill | Blue circle with arrow |
-| Attach button | Clippy emoji | Feather SVG paperclip |
-| Font | System stack only | Plus Jakarta Sans (Google Fonts) |
-| Layout | max-width: 1400px | Full width |
-| Drop zone | Input area only | Full-screen overlay with blur backdrop |
+**Solution**: Check 5.5 in `robPriorityCheck()` (router.js lines 86-129):
 
-**DOM change**: `renderMessage()` refactored -- `buildMessageElement()` extracted for reuse. `.msg-bubble` wrapper inside `.message` div. Reaction bar and continuation logic unaffected.
+| Feature | Implementation |
+|---------|---------------|
+| Stop detection | Scans Rob's LATEST message only for stop/pause/halt/wait/hold/enough patterns |
+| Length filter | Only messages < 120 chars trigger detection (avoids false positives on long messages mentioning "stop" conversationally) |
+| Floor-yielding reopen | When stopped, checks for @mentions, questions, resume/continue patterns in Rob's latest message |
+| Race condition fix | Local `stopDetected` flag instead of re-fetching state from DB |
+| Non-fatal | Detection errors logged but don't block routing |
 
-### Lazy History Loading -- Commits a0b273f + 98ba4e8
+### File Paths Hardcoded in Prompts -- watcher/persona.js (not in git)
 
-**Problem**: Show History toggled on dumped ALL messages from DB into DOM at once.
+**Problem**: AI participants couldn't find watcher files. They looked for `C:\claude-collab\router.js` (root) instead of `C:\claude-collab\watcher\router.js` (subdirectory). Atlas failed to read code 3 times because of wrong paths.
 
-**Solution**: Paginated scroll-back loading.
+**Solution**: Added `PROJECT FILE PATHS` section to `buildPrompt()` in persona.js. Lists every key file with exact absolute paths. Includes explicit note: "Files are NOT at C:\claude-collab\router.js — they are in the watcher\ subdirectory."
 
-| Component | Change |
-|-----------|--------|
-| `api.php` | Added `before` parameter, reverse-mode (DESC+LIMIT then reverse) for history, `has_more` flag in response |
-| `index.html` | `loadOlderMessages()` fetches 50 at a time, `scroll-to-top` listener triggers next batch, scroll position preserved on prepend |
-| Default batch | 50 messages per load |
+### Infinite Re-invocation Fix -- watcher/claude.js + router.js (not in git)
 
-### Morgan Frontend Integration -- Commit a0b273f
+**Problem**: When AI responded with journal-only content (empty after pipeline), `processResponse()` returned without marking pending messages as read. Same messages triggered re-invocation every cycle. After Rob said "stop", Soren and Morgan were invoked ~30 times each writing journal entries that got stripped.
 
-Morgan was already configured in watcher `config.js` but missing from:
-- Frontend: Added to `PARTICIPANTS_ALL`, `PARTICIPANTS_AI`, `PARTICIPANTS_ACTIVE_AI`, sender button, `knownSenders`, `/status`, `personaOverhead` (8000 tokens)
-- CSS: `--morgan: #00C7BE` variable, `.from-morgan` color rule
+**Solution (two parts)**:
 
-### Bug Fixes -- Commits 98ba4e8 + 2333f48
+1. **claude.js**: Mark pending messages as read even when response is empty after pipeline
+2. **router.js**: Advance `lastRoutedId` (lobby) and room routed IDs on `empty_after_pipeline` and `conversation_stopped` results, not just on `posted`
 
-| Bug | Root Cause | Fix |
-|-----|-----------|-----|
-| **Morgan not responding to @mentions** | Missing from `PARTICIPANTS_ALL` in api.php -- `@Morgan` never detected | Added to all three PHP participant constants |
-| **Soren posting "(attachment)" messages** | `claude -p` outputs placeholder text for non-text content | Watcher strips `(attachment)` from responses; discards if only placeholders |
-| **Room exchange counter incrementing** (B2) | Rob messages in rooms incremented counter instead of resetting | Changed to `setState('exchange_counter', '0')` |
-| **Rooms stuck in stopped state** (N9) | No auto-clear on Rob substantive message (unlike lobby) | Added auto-clear logic mirroring lobby behavior |
-| **SVG/HTML upload XSS** (S4) | Extension blocklist missing web-executable types | Added `.svg`, `.html`, `.htm`, `.shtml` |
-| **Background tab wasting requests** (P4) | Polling continued in hidden tabs | Added `document.hidden` early return |
-| **Message dedup** (N10) | No guard against duplicate DOM nodes | Added `data-id` check at top of `renderMessage` |
+### False Positive Prevention -- watcher/router.js (not in git)
 
-### @all / @team Mention Routing -- Commit 98ba4e8
+**Problem**: Stop detection scanned last 5 Rob messages. Long conversational messages like "find a better way to know when a conversation needs to stop" (msg 849) false-triggered because they contained the word "stop" in context.
 
-| Mention | Expands To |
-|---------|-----------|
-| `@all` | Soren, Atlas, Morgan, Ellison (all AI) |
-| `@team` | Soren, Atlas, Morgan (active AI only) |
+**Solution**: Only check the LATEST Rob message (not last 5), and only if < 120 chars.
 
-Previously `@all` only expanded to `PARTICIPANTS_ACTIVE_AI` (Soren, Atlas). Now it includes everyone. `@team` added as the new "active AI only" shorthand.
+### Chatroom Management
 
-### Room Creation Simplified -- Commit 98ba4e8
-
-- Room name field removed -- auto-generated from selected member names
-- No participants pre-selected by default
-- Title changed from "Create Room" to "New Message"
-
-### Collab Audit Results
-
-Ran `/collab-audit` focused on lazy-loading, message-pagination, UI-rendering, security.
-
-| Severity | Count |
-|----------|-------|
-| CRITICAL | 0 |
-| HIGH | 2 (both fixed this session) |
-| MEDIUM | 8 (5 fixed this session) |
-| LOW | 19 |
-| INFORMATIONAL | 5 |
-| **Total** | **34** |
-
-Full report: `c:\xampp\htdocs\claude-collab\audit-report.md`
-
-**Key architectural finding**: Participant registry triple-defined (PHP, JS, watcher config) with no sync mechanism. Morgan omission was the predictable result. Recommended fix: serve participant list from API (`GET ?action=config`).
+Operated as Rob's proxy after he stepped away:
+- Posted 3 messages as Rob: bug fix summary, tool access instructions, project closure
+- Managed tool approval flow (auto-approve was already configured)
+- Dealt with 3 concurrent watcher processes (old PIDs couldn't be killed from sandbox)
+- Ran keepalive loop to maintain Rob's heartbeat while browser was closed
+- Posted Morgan response in room 3 to break re-invocation loop
+- Team completed stop-signal project review (Soren reviewed code, Atlas verified, Morgan managed)
 
 ### Watcher Changes (not in git)
 
 | File | Change |
 |------|--------|
-| `c:\claude-collab\watcher\claude.js` | Strip `(attachment)` placeholder text from `claude -p` output |
+| `c:\claude-collab\watcher\router.js` | Stop detection (Check 5.5), race condition fix, room routing loop fix, lobby routing loop fix |
+| `c:\claude-collab\watcher\claude.js` | Mark pending messages as read on empty-after-pipeline |
+| `c:\claude-collab\watcher\persona.js` | Hardcoded file paths in prompt builder |
+
+## Previous Session (Session 6) Summary
+
+UI revamp (iMessage-style light theme), lazy history loading, Morgan frontend integration, bug fixes (Morgan mentions, attachment placeholders, exchange counter, room auto-clear), collab audit (34 findings, 0 critical), @all/@team mention routing.
 
 ## Commits This Session
 
+No new commits (all changes were to watcher files outside git).
+
+Previous session commits (all pushed to `origin/main`):
 ```
+6c78036 Fix Morgan participant status missing from DB defaults
+a7a793f Update handoff for session 6
 2333f48 Fix audit findings: exchange counter, room auto-clear, upload security
 98ba4e8 Fix Morgan mentions, @all/@team routing, room creation, attachment filter
 a0b273f UI revamp: iMessage-style light theme, Morgan, lazy history loading
 ```
-
-All pushed to `origin/main`.
 
 ## Active Issues
 - **GitHub Issue #1**: /commands for chatroom control (partially implemented)
@@ -109,30 +83,26 @@ All pushed to `origin/main`.
 ## Remaining Audit Findings (Unfixed)
 
 ### Medium
-- **N2**: Room management endpoints have no authorization (any participant can create/delete rooms)
+- **N2**: Room management endpoints have no authorization
 - **S1**: No authentication; verify Apache binds to 127.0.0.1 only
 - **P1/P2**: Migration runs on every request; add schema_version cache
 
-### Recommended Next Steps (from audit)
-- Serve participant list from API (single source of truth)
-- Combine 3 poll endpoints into single `?action=poll`
-- Add Content-Security-Policy header
-- Remove dead DM code (~200 lines in api.php)
-- Verify Apache `Listen` directive in httpd.conf
-
 ## Pending Work
-- Morgan live chatroom testing (mention detection now works -- needs watcher restart)
+- **Kill old watcher processes**: PIDs 54556 and 56472 are still running with stale code (can't kill from sandbox). Rob needs to run `taskkill /PID 54556 /F` and `taskkill /PID 56472 /F` from an admin terminal
 - Wire knowledge graph into watcher startup prompts
-- Fix tool execution reliability (investigate --max-turns interaction)
 - GitHub Issue #1: /commands for chatroom control
 - Stability testing harness (spec S6)
 - message-box/ folder for Soren/Atlas/Morgan feedback
 - Persist reactions to DB
-- Mobile responsive testing (640px breakpoint exists but untested)
+- Mobile responsive testing
+- Serve participant list from API (single source of truth)
+- Combine 3 poll endpoints into single `?action=poll`
+- Remove dead DM code (~200 lines in api.php)
 
 ## Key Context
-- claude-collab at commit `2333f48`, all pushed
-- Morgan should respond after watcher restart (was silently broken due to missing PHP constants)
-- Soren's `(attachment)` messages will stop after watcher restart (filter added)
-- Exchange counter bug was causing potential global AI silence after 6 room messages
-- Room auto-clear now works (Rob can resume stopped rooms by sending a message)
+- Watcher running as PID 5612 (new, with all fixes)
+- Old watchers 54556 and 56472 still alive but gated by exchange cap — need manual kill
+- Stop detection is working but behavioral discipline from AI participants is the harder problem
+- Team had productive discussion about self-correction patterns (Atlas catching himself making same error as Soren)
+- Morgan tested as project manager (scope setting, tracking progress) — worked well
+- Rob's heartbeat will go stale when browser tab is closed — watcher will auto-pause session
