@@ -1,67 +1,64 @@
-# Handoff — 2026-03-10 (Session 2)
+# Handoff — 2026-03-10 (Session 3)
 
 ## What Happened This Session
 
 ### Summary
-Implemented **GitHub Issue #2** (conversation ending enforcement) and fixed **GitHub Issue #3** (history endpoint returning empty body). Both bugs resolved with agentic debugging and auditing.
+Ran **Ellison personality experiments** with Soren and Atlas, then built **API-side message pruning** as a collaborative construction task. Both Soren and Atlas used tool access to read the codebase, design the solution, and implement changes to api.php and index.html.
 
-### Issue #2: Conversation Ending Enforcement
+### Personality Experiments (Ellison)
 
-Four changes across API, watcher config, watcher router, and watcher claude.js:
+1. **Soren's zero-abstraction filter test** — Given a real task (design an inbox for Rob), 90-second window. Initial impulse was structured (timestamps, priority flags, categories). Ran the filter, caught it, revised to append-only text file. Passed under observation. Ellison noted the observer effect — real test is next unannounced task from Rob.
 
-1. **Stop signal detection** — Split keywords into two tiers:
-   - Thread stop ("stop", "enough", "halt", "pause"): sets `conversation_state='stopped'`, session stays alive
-   - Session kill ("end session", "stop session", "pause session"): sets both `session_active='false'` AND `conversation_state='stopped'`
-   - Auto-clear: Rob posting a substantive message resets `conversation_state` to `'active'`
+2. **Atlas's stop-signal test** — Attempted but timing was wrong. Atlas had already completed his response and handed off at a decision boundary before the stop signal arrived. Ellison observed this as disciplined scope management, not the "closure aesthetic" failure mode. Full mid-construction test still pending.
 
-2. **Agreement loop detection** — `detectAgreementLoop()` checks if last 3 messages are all AI-only, short (<80 chars), and match agreement patterns (e.g., "Agreed.", "Good.", "Noted."). Triggers system message and sets `conversation_state='stopped'`.
+3. **Ellison's synthesis:**
+   - **Atlas next step**: Distinguish "clarifying to build correctly" (structural necessity) vs "clarifying to feel ready" (anxiety management)
+   - **Soren next step**: Practice leading design, not just auditing after someone else builds. Filter proved to work under observation; needs natural-conditions validation.
 
-3. **Persona prompt instructions** — Added `extraInstructions` to Soren and Atlas config: never post bare agreement, stay silent on stop signals.
+### Auto-Prune Feature (Built by Atlas + Soren)
 
-4. **Inactivity auto-close** — 15 minutes without Rob message auto-closes session.
+**Problem**: Frontend loads all messages from DB on every poll — 612+ messages, growing unbounded.
 
-5. **In-flight response discard** — If Rob says "stop" while `claude -p` is running, response is discarded before posting.
+**Solution**: API-side session filtering (no DB deletion).
 
-6. **6th priority gate check** — `conversation_state='stopped'` blocks all AI routing at the gate level.
+| Change | Who | What |
+|--------|-----|------|
+| `api.php` lines 383-420 | Atlas | Default `?action=messages` returns current session only. `?include_history=true` returns all. Existing `?session=N` still works. |
+| `index.html` | Soren | Added Show History checkbox. Default (unchecked) = current session only. Checked = passes `include_history=true`. Toggle clears display and refetches. |
 
-### Issue #3: History Endpoint Empty Body
+**Result**: Default poll returns ~49 messages (current session) instead of 612+ (all history). History is opt-in via toggle.
 
-**Root cause**: Message #710 contained a Windows-1252 em-dash byte (`0x97`) instead of valid UTF-8. `json_encode()` returned `false`, `echo false` output 0 bytes.
-
-**Fixes**:
-- Corrected the bad byte in message #710
-- Added `JSON_INVALID_UTF8_SUBSTITUTE` flag to all 13 `json_encode()` calls that handle user content
-- Added error detection on the history handler: returns HTTP 500 with `json_last_error_msg()` instead of silent empty body
-
-### Files Changed
+### Files Changed (Uncommitted)
 
 | File | Changes |
 |------|---------|
-| `api.php` | Stop keyword split, auto-clear, `set_conversation_state` endpoint, `conversation_state` migration, `JSON_INVALID_UTF8_SUBSTITUTE` on 13 encode calls, history error detection, LIMIT placeholder fix |
-| `c:\claude-collab\watcher\config.js` | `AGREEMENT_LOOP_THRESHOLD`, `AGREEMENT_PATTERN`, `INACTIVITY_CLOSE_MS`, `extraInstructions` for Soren/Atlas |
-| `c:\claude-collab\watcher\router.js` | 6th gate check, `detectAgreementLoop()`, updated imports/exports |
-| `c:\claude-collab\watcher\claude.js` | Response discard guard when `conversation_state='stopped'` |
-| `c:\claude-collab\watcher.js` | Inactivity auto-close, agreement loop wire-up, updated imports |
+| `api.php` | Session filtering logic: default to current session, `include_history=true` parameter, preserved `session=N` behavior |
+| `index.html` | Show History checkbox + toggle handler, `fetchMessages()` passes `include_history=true` when checked |
 
-### New API Endpoint
+### Known Issue: Soren Double-Response
 
-`POST set_conversation_state` — lets watcher set `conversation_state` to `'active'` or `'stopped'`.
+Soren responded twice to the same task (messages 735 and 739) — said "I need to see the code" initially, then after tool approval said the same thing again instead of using the tools. This is the known tool execution reliability bug (`--max-turns 2` on initial invocation).
+
+### Known Issue: Em-Dash Corruption in Curl Posts
+
+When posting to the API via curl from bash, em-dashes in the `-d` content get sent as bad bytes, showing as `?` in the chatroom. Fix: use `--` instead of em-dashes in curl post content. The `JSON_INVALID_UTF8_SUBSTITUTE` fix handles reading bad bytes but doesn't prevent them from being written.
 
 ## Watcher State
 - Watcher running: PID 24324
-- Session 6 paused (handoff)
-- 558 total messages in DB
+- Session 9 ended explicitly
+- 612 total messages in DB (IDs up to #770)
 
 ## Active Issues
 - **GitHub Issue #1**: /commands for chatroom control
-- **GitHub Issue #2**: RESOLVED this session
-- **GitHub Issue #3**: RESOLVED this session
 - **Knowledge graph**: v3 extraction validated but not wired into watcher startup prompts
-- **Tool execution reliability**: `--max-turns 2` on standard invocation means tools require `[TOOL_REQUEST]` flow
+- **Tool execution reliability**: `--max-turns 2` on standard invocation means tools require `[TOOL_REQUEST]` flow; also causes double-response bug
 - **Reactions**: Still client-side only, not persisted to DB
+- **Atlas stop-signal experiment**: Not yet properly tested (needs mid-construction interrupt)
 
 ## Pending Work
-- **Test collab audit** on a real project (first live run — was running on ai-ta this session, results pending)
+- **Third AI participant**: Female persona, emotionally focused, UI/UX specialty. Discuss with Soren, Atlas, and Ellison in a chatroom session before building.
+- **Group private rooms**: Existing DMs are 1:1 only. Consider multi-participant side-channels.
+- **Test collab audit** on a real project (first live run)
 - Wire knowledge graph into watcher startup prompts
 - Fix tool execution reliability (investigate --max-turns interaction)
 - GitHub Issue #1: /commands for chatroom control
@@ -70,7 +67,9 @@ Four changes across API, watcher config, watcher router, and watcher claude.js:
 - Persist reactions to DB
 
 ## Key Context
-- 558 messages in DB (IDs up to #716), session 6 paused
-- claude-collab is at commit `f21850f` + uncommitted api.php changes
-- Watcher code (outside git) has Issue #2 changes applied
-- Collab audit first live test was running on ai-ta this session — results not yet reviewed
+- 612 messages in DB (IDs up to #770), session 9 ended
+- claude-collab is at commit `f21850f` + uncommitted changes to api.php and index.html
+- Watcher code (outside git) has Issue #2 changes from session 2
+- Auto-prune verified working: default poll returns current session only (49 msgs vs 612 total)
+- Soren's filter experiment passed under observation; unannounced retest pending
+- Ellison gave developmental next-steps for both Soren and Atlas

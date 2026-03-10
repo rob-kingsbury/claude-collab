@@ -56,6 +56,13 @@
                 <button id="search-close">&times;</button>
             </div>
 
+            <div id="history-controls">
+                <label>
+                    <input type="checkbox" id="show-history-toggle" />
+                    Show History
+                </label>
+            </div>
+
             <main id="chat-container">
                 <div id="messages"></div>
                 <div id="typing-indicator" class="typing-indicator hidden">
@@ -311,6 +318,14 @@
 
         searchInput.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') searchClose.click();
+        });
+
+        // --- Show History toggle ---
+        document.getElementById('show-history-toggle').addEventListener('change', () => {
+            lastMessageId = 0;
+            sessionDividerInserted = false;
+            messagesEl.innerHTML = '';
+            fetchMessages();
         });
 
         // --- Typing indicator (Rob priority enforcement, throttled to 1 POST per 3s) ---
@@ -634,7 +649,9 @@
         // --- Fetch & render messages ---
         async function fetchMessages() {
             try {
+                const showHistory = document.getElementById('show-history-toggle')?.checked || false;
                 let url = `${API}?action=messages&since=${lastMessageId}`;
+                if (showHistory) url += '&include_history=true';
                 const res = await fetch(url, {cache: 'no-store'});
                 const data = await res.json();
                 // Status dot reflects connection health, not session state (fetchState handles session)

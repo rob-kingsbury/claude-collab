@@ -383,6 +383,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         $since = (int)($_GET['since'] ?? 0);
         $limit = (int)($_GET['limit'] ?? 0);
         $session = $_GET['session'] ?? '';
+        $includeHistory = ($_GET['include_history'] ?? 'false') === 'true';
 
         $sql = "SELECT * FROM messages";
         $params = [];
@@ -393,17 +394,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
             $params[] = $since;
         }
 
-        // Session filtering: 'current' = current session (+ orphan NULL messages), numeric = specific session ID
-        if ($session === 'current') {
-            $currentId = getCurrentSessionId($db);
-            if ($currentId !== null) {
+        // Session filtering:
+        // - Default behavior (no parameters): return only current session (lightweight poll)
+        // - ?include_history=true: return all sessions (opt-in for Show History toggle)
+        // - ?session=current: explicit current session filter
+        // - ?session=N: specific session ID
+        if (!$includeHistory) {
+            if ($session === '' || $session === 'current') {
+                // Default: current session only
+                $currentId = getCurrentSessionId($db);
+                if ($currentId !== null) {
+                    $conditions[] = "session_id = ?";
+                    $params[] = $currentId;
+                }
+            } elseif (is_numeric($session)) {
+                // Specific session ID
                 $conditions[] = "session_id = ?";
-                $params[] = $currentId;
+                $params[] = (int)$session;
             }
-        } elseif ($session !== '' && is_numeric($session)) {
-            $conditions[] = "session_id = ?";
-            $params[] = (int)$session;
         }
+        // If include_history=true, no session filter — return all messages
 
         if (count($conditions) > 0) {
             $sql .= " WHERE " . implode(" AND ", $conditions);
