@@ -171,7 +171,7 @@ function initDb(PDO $db): void {
         'rob_typing_at' => '',
         'participant_status_Soren' => 'idle',
         'participant_status_Atlas' => 'idle',
-        'participant_status_Web' => 'idle',
+        'participant_status_Morgan' => 'idle',
         'participant_status_Ellison' => 'idle',
         'rob_heartbeat_at' => '',
         'rob_focused' => 'false',
