@@ -1,84 +1,73 @@
-# Handoff -- 2026-03-10 (Session 7)
+# Handoff -- 2026-03-10 (Session 8)
 
 ## What Happened This Session
 
 ### Summary
-**Stop signal detection** (automatic watcher enforcement), **file path hardcoding** in AI prompts, **infinite re-invocation fix** (empty-after-pipeline marking), **stop detection race condition fix**, **false positive prevention**, and **room routing loop fix**. Also managed the chatroom as Rob's proxy while he stepped away.
+**Pattern-Based Behavioral Learning System (PBLS)** — collaboratively designed by Soren, Atlas, and Morgan, then implemented. Two-track system (knowledge patterns + trust-calibration patterns) with SM-2 adaptive intervals, RAG-style relevance matching, Gollwitzer if-then format, and CBT-inspired graduated exposure. Also fixed UTF-8 encoding (em-dash corruption), @team mention regex, and room-scoped typing indicator.
 
-### Automatic Stop Signal Detection -- watcher/router.js (not in git)
+### PBLS Architecture -- watcher/patterns.js + persona.js + claude.js (not in git)
 
-**Problem**: Rob's stop signals ("stop", "hold on", "enough", etc.) were only enforced via manual `conversation_state` toggle. AI participants could see the instructions but ignored them.
+**Problem**: AI participants could articulate behavioral principles but still violated them. Journal entries captured reflection but didn't reliably translate to behavior change. Learning was shallow pattern-matching from recent context, not durable improvement.
 
-**Solution**: Check 5.5 in `robPriorityCheck()` (router.js lines 86-129):
+**Solution**: Two-track pattern system designed collaboratively by the team:
 
-| Feature | Implementation |
-|---------|---------------|
-| Stop detection | Scans Rob's LATEST message only for stop/pause/halt/wait/hold/enough patterns |
-| Length filter | Only messages < 120 chars trigger detection (avoids false positives on long messages mentioning "stop" conversationally) |
-| Floor-yielding reopen | When stopped, checks for @mentions, questions, resume/continue patterns in Rob's latest message |
-| Race condition fix | Local `stopDetected` flag instead of re-fetching state from DB |
-| Non-fatal | Detection errors logged but don't block routing |
+| Component | Implementation |
+|-----------|---------------|
+| Track 1: Knowledge | Failures where you didn't see the pattern (Soren's wrong file paths, Atlas's unverified claims) |
+| Track 2: Trust-Calibration | Execution-gap failures where you know the rule (Morgan's posting after stop signals) |
+| Pattern format | Gollwitzer if-then conditionals with triggers, actions, counterfactuals, evidence |
+| Relevance matching | RAG-style: patterns match against Rob's message keywords, only inject relevant patterns |
+| Interval scheduling | SM-2 adaptive: clean execution expands interval (1→3→7→18), violation resets to 1 |
+| Conflict resolution | Track 2 overrides Track 1; within track, more cross-context patterns take priority |
+| Gate failure logging | didnt_see / saw_dismissed / saw_overrode with mandatory reason field |
+| Trust calibration | Graduated exposure: high_support → medium → low → independent |
+| Auto-promotion | 10 clean sessions → internalized, 30 → archived, violation resets |
+| Pattern injection | After trait activation, before narrative identity (high attention zone) |
+| Post-response extraction | [PATTERN_VIOLATED], [PATTERN_EXECUTED], [BEHAVIORAL_EXPERIMENT] tags parsed automatically |
 
-### File Paths Hardcoded in Prompts -- watcher/persona.js (not in git)
+**Storage**: `C:\claude-collab\patterns\` with personal/{name}/, shared/, contributed/, library/ subdirectories.
 
-**Problem**: AI participants couldn't find watcher files. They looked for `C:\claude-collab\router.js` (root) instead of `C:\claude-collab\watcher\router.js` (subdirectory). Atlas failed to read code 3 times because of wrong paths.
+**Seed patterns created**: verify-before-citing (Soren), detect-applicable-rules (Atlas), silence-after-stop (Morgan), claim-completion-without-verification (shared), question-means-answer (Rob-contributed).
 
-**Solution**: Added `PROJECT FILE PATHS` section to `buildPrompt()` in persona.js. Lists every key file with exact absolute paths. Includes explicit note: "Files are NOT at C:\claude-collab\router.js — they are in the watcher\ subdirectory."
+### Design Process
 
-### Infinite Re-invocation Fix -- watcher/claude.js + router.js (not in git)
+Team discussion spanned ~20 messages with each participant providing:
+- **Soren**: SM-2 spaced repetition adaptation, Gollwitzer implementation intentions (if-then format), gate failure granularity (saw_dismissed vs saw_overrode)
+- **Atlas**: RAG relevance matching, MemGPT-inspired promotion by cross-context recurrence, pattern conflict resolution protocol, code-review-checklist hard gates
+- **Morgan**: Two-track architecture (knowledge vs execution-gap), CBT exposure/response prevention, trust calibration with behavioral experiments and graduated exposure, mandatory prediction logging
 
-**Problem**: When AI responded with journal-only content (empty after pipeline), `processResponse()` returned without marking pending messages as read. Same messages triggered re-invocation every cycle. After Rob said "stop", Soren and Morgan were invoked ~30 times each writing journal entries that got stripped.
+### UTF-8 Encoding Fix -- api.php (commit 745d1bc)
 
-**Solution (two parts)**:
+Added `ensureUtf8()` function to convert Windows-1252 → UTF-8 before storing. Applied to all content ingestion points (post, DM, room_message). Fixes em-dash (—) showing as replacement character (�).
 
-1. **claude.js**: Mark pending messages as read even when response is empty after pipeline
-2. **router.js**: Advance `lastRoutedId` (lobby) and room routed IDs on `empty_after_pipeline` and `conversation_stopped` results, not just on `posted`
+### Other Fixes -- index.html + style.css (commit 745d1bc)
 
-### False Positive Prevention -- watcher/router.js (not in git)
-
-**Problem**: Stop detection scanned last 5 Rob messages. Long conversational messages like "find a better way to know when a conversation needs to stop" (msg 849) false-triggered because they contained the word "stop" in context.
-
-**Solution**: Only check the LATEST Rob message (not last 5), and only if < 120 chars.
-
-### Chatroom Management
-
-Operated as Rob's proxy after he stepped away:
-- Posted 3 messages as Rob: bug fix summary, tool access instructions, project closure
-- Managed tool approval flow (auto-approve was already configured)
-- Dealt with 3 concurrent watcher processes (old PIDs couldn't be killed from sandbox)
-- Ran keepalive loop to maintain Rob's heartbeat while browser was closed
-- Posted Morgan response in room 3 to break re-invocation loop
-- Team completed stop-signal project review (Soren reviewed code, Atlas verified, Morgan managed)
+- MENTION_REGEX now includes @team (was only @all)
+- Typing indicator scoped to room members when in private room
+- Rob message timestamp and mention colors fixed in light theme
 
 ### Watcher Changes (not in git)
 
 | File | Change |
 |------|--------|
-| `c:\claude-collab\watcher\router.js` | Stop detection (Check 5.5), race condition fix, room routing loop fix, lobby routing loop fix |
-| `c:\claude-collab\watcher\claude.js` | Mark pending messages as read on empty-after-pipeline |
-| `c:\claude-collab\watcher\persona.js` | Hardcoded file paths in prompt builder |
+| `c:\claude-collab\watcher\patterns.js` | NEW — pattern loader, matcher, formatter, evidence updater, SM-2 intervals |
+| `c:\claude-collab\watcher\persona.js` | PBLS integration: load patterns, match context, inject block; pattern reporting instructions |
+| `c:\claude-collab\watcher\claude.js` | PBLS extraction: strip pattern tags, parse violations/executions/experiments, update evidence; WebFetch/WebSearch in tool allowlist |
+| `c:\claude-collab\watcher\router.js` | Pass sessionCount to buildPrompt for SM-2 interval calculation |
 
-## Previous Session (Session 6) Summary
+## Previous Session (Session 7) Summary
 
-UI revamp (iMessage-style light theme), lazy history loading, Morgan frontend integration, bug fixes (Morgan mentions, attachment placeholders, exchange counter, room auto-clear), collab audit (34 findings, 0 critical), @all/@team mention routing.
+Stop signal detection (Check 5.5), file path hardcoding in prompts, infinite re-invocation fix, stop detection race condition fix, false positive prevention, room routing loop fix. Managed chatroom as Rob's proxy.
 
 ## Commits This Session
 
-No new commits (all changes were to watcher files outside git).
-
-Previous session commits (all pushed to `origin/main`):
 ```
-6c78036 Fix Morgan participant status missing from DB defaults
-a7a793f Update handoff for session 6
-2333f48 Fix audit findings: exchange counter, room auto-clear, upload security
-98ba4e8 Fix Morgan mentions, @all/@team routing, room creation, attachment filter
-a0b273f UI revamp: iMessage-style light theme, Morgan, lazy history loading
+745d1bc Fix UTF-8 encoding, @team mentions, room typing indicator, session 7 handoff
 ```
 
 ## Active Issues
 - **GitHub Issue #1**: /commands for chatroom control (partially implemented)
 - **Knowledge graph**: v3 extraction validated but not wired into watcher startup prompts
-- **Tool execution reliability**: `--max-turns 2` on standard invocation means tools require `[TOOL_REQUEST]` flow
 
 ## Remaining Audit Findings (Unfixed)
 
@@ -88,21 +77,20 @@ a0b273f UI revamp: iMessage-style light theme, Morgan, lazy history loading
 - **P1/P2**: Migration runs on every request; add schema_version cache
 
 ## Pending Work
-- **Kill old watcher processes**: PIDs 54556 and 56472 are still running with stale code (can't kill from sandbox). Rob needs to run `taskkill /PID 54556 /F` and `taskkill /PID 56472 /F` from an admin terminal
+- Session-close synthesis script (compress raw journal → pattern updates)
 - Wire knowledge graph into watcher startup prompts
 - GitHub Issue #1: /commands for chatroom control
 - Stability testing harness (spec S6)
 - message-box/ folder for Soren/Atlas/Morgan feedback
 - Persist reactions to DB
-- Mobile responsive testing
 - Serve participant list from API (single source of truth)
 - Combine 3 poll endpoints into single `?action=poll`
 - Remove dead DM code (~200 lines in api.php)
+- Add watcher self-exit on prolonged kill-switch removal
 
 ## Key Context
-- Watcher running as PID 5612 (new, with all fixes)
-- Old watchers 54556 and 56472 still alive but gated by exchange cap — need manual kill
-- Stop detection is working but behavioral discipline from AI participants is the harder problem
-- Team had productive discussion about self-correction patterns (Atlas catching himself making same error as Soren)
-- Morgan tested as project manager (scope setting, tracking progress) — worked well
-- Rob's heartbeat will go stale when browser tab is closed — watcher will auto-pause session
+- PBLS is live — patterns injecting into prompts, evidence updating automatically
+- Watcher running as new PID (post-PBLS restart)
+- Exchange cap temporarily set to 20 (was 6) for extended team discussion
+- All 3 participants confirmed seeing pattern injection and understanding the system
+- SM-2 intervals already updating (Atlas's detect-applicable-rules at interval=3, clean_streak=2)
