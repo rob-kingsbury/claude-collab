@@ -814,6 +814,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 setState($db, 'exchange_counter', '0');
                 setState($db, 'session_ended_explicitly', 'false');
                 setState($db, 'conversation_state', 'active');
+                setState($db, 'last_rob_message_at', gmdate('Y-m-d\TH:i:s\Z'));
                 if (getCurrentSessionId($db) === null) {
                     startSession($db);
                 }
@@ -932,6 +933,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // NOT if Rob explicitly ended it via the End Session button.
             if (getState($db, 'session_active') !== 'true' && getState($db, 'session_ended_explicitly') !== 'true') {
                 setState($db, 'session_active', 'true');
+                setState($db, 'last_rob_message_at', gmdate('Y-m-d\TH:i:s\Z'));
                 // Ensure a session row exists
                 if (getCurrentSessionId($db) === null) {
                     startSession($db);
@@ -955,6 +957,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($state === 'active') {
             setState($db, 'exchange_counter', '0');
             setState($db, 'session_ended_explicitly', 'false');
+            setState($db, 'last_rob_message_at', gmdate('Y-m-d\TH:i:s\Z'));
             // Create a new session row if none is active
             if (getCurrentSessionId($db) === null) {
                 $sessionId = startSession($db);
