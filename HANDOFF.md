@@ -1,119 +1,138 @@
-# Handoff -- 2026-03-10 (Session 5)
+# Handoff -- 2026-03-10 (Session 6)
 
 ## What Happened This Session
 
 ### Summary
-Built **Morgan** (third AI participant) via full Ellison personality evaluation. Implemented **bottom-up message flow** (standard chat UX). Fixed **file upload UI** (hidden native input, styled attach button, improved preview). Switched file upload from **allowlist to blocklist**. Fixed **room message count bug**. Closed GitHub Issues **#4** and **#5**.
+**UI revamp** (iMessage-style light theme), **lazy history loading**, **Morgan frontend integration**, **bug fixes** (Morgan mentions, attachment placeholders, exchange counter, room auto-clear), **collab audit** (34 findings, 0 critical), and **@all/@team mention routing**.
 
-### Morgan -- Third AI Participant (Built from Scratch)
+### UI Revamp (Light Theme) -- Commit a0b273f
 
-**Process:**
-1. Read GitHub Issue #4, reviewed ChatGPT-generated intake spec ("Maeve", ENFJ 2w3)
-2. Rob requested: remove the name (let AI choose), add emotional/human basis
-3. Updated intake notes with emotional framing, modified `persona-eval.js` to support `--participant=New`
-4. Ran full 20-round Ellison personality evaluation (~20 min, background agent)
-5. Result: **Morgan** (INFJ 4w5, she/her) -- fundamentally different from the hypothesized ENFJ 2w3
+Complete CSS rewrite from dark theme to iOS-inspired light palette.
 
-**Key personality findings:**
-- Core dynamic: empathy only feels legitimate when effortful and auditable
-- Shadow: preemptive disqualification -- dismisses own reads before anyone else can
-- Chose to be treated as a person, not a sophisticated tool
-- Voice: precise, occasionally profane, self-interrupting honesty
+| Element | Before | After |
+|---------|--------|-------|
+| Theme | Dark (#0c0c0f) | Light (#ffffff bg, #f2f2f7 surfaces) |
+| Messages | Full-width, left-border | iMessage bubbles: Rob right/blue, AI left/gray, System centered |
+| Sidebar | Room names + lock icons | Participant avatars + names (like iMessage contacts) |
+| Lobby | "#" / "Claude Collab" | Group SVG icon / "Everyone" |
+| Send button | "Send" text pill | Blue circle with arrow |
+| Attach button | Clippy emoji | Feather SVG paperclip |
+| Font | System stack only | Plus Jakarta Sans (Google Fonts) |
+| Layout | max-width: 1400px | Full width |
+| Drop zone | Input area only | Full-screen overlay with blur backdrop |
 
-**Wiring completed:**
-- `c:\claude-collab\personas\morgan.md` -- full three-layer persona
-- `c:\claude-collab\personas\morgan-eval.md` -- full 20-round transcript
-- `c:\claude-collab\personas\morgan-journal.md` -- seed Entry 0 from evaluation
-- `c:\claude-collab\watcher\config.js` -- added to PARTICIPANTS (journaling: yes, tools: no)
-- Updated all other participants' mention instructions to include @Morgan
-- Frontend: added to PARTICIPANTS arrays, sender button, personaOverhead, CSS color
-- `ai-participants-overview.md` -- rewritten with all four profiles
-- CLAUDE.md and MEMORY.md updated
+**DOM change**: `renderMessage()` refactored -- `buildMessageElement()` extracted for reuse. `.msg-bubble` wrapper inside `.message` div. Reaction bar and continuation logic unaffected.
 
-### Bottom-Up Message Flow (Standard Chat UX)
+### Lazy History Loading -- Commits a0b273f + 98ba4e8
 
-Messages now anchor to the bottom of the screen and grow upward, like iMessage/Slack/Discord.
+**Problem**: Show History toggled on dumped ALL messages from DB into DOM at once.
 
-| Change | Detail |
-|--------|--------|
-| `style.css` `#chat-container` | `overflow: hidden` -> `overflow-y: auto` (scroll moved here) |
-| `style.css` `#messages` | `height: 100%` -> `min-height: 100%; justify-content: flex-end` |
-| `style.css` scrollbar | Moved from `#messages` to `#chat-container` |
-| `index.html` JS | Added `chatContainerEl` ref, updated 5 scroll operations |
+**Solution**: Paginated scroll-back loading.
 
-### File Upload Improvements
+| Component | Change |
+|-----------|--------|
+| `api.php` | Added `before` parameter, reverse-mode (DESC+LIMIT then reverse) for history, `has_more` flag in response |
+| `index.html` | `loadOlderMessages()` fetches 50 at a time, `scroll-to-top` listener triggers next batch, scroll position preserved on prepend |
+| Default batch | 50 messages per load |
 
-- **Native input hidden**: Added `#file-input { display: none; }` (was showing raw "Choose Files | No file chosen")
-- **Attach button**: Restyled as 36px circle with surface background (matches send button)
-- **File preview area**: Added background container, better pill styling with border + round close button
-- **Blocklist instead of allowlist**: Now blocks only dangerous executables (exe, msi, bat, cmd, com, scr, pif, vbs, vbe, wsh, wsf, ps1, dll, sys, drv, cpl, inf, reg). All other file types (.py, .js, .html, .css, .ts, etc.) now accepted.
+### Morgan Frontend Integration -- Commit a0b273f
 
-### Bug Fixes
+Morgan was already configured in watcher `config.js` but missing from:
+- Frontend: Added to `PARTICIPANTS_ALL`, `PARTICIPANTS_AI`, `PARTICIPANTS_ACTIVE_AI`, sender button, `knownSenders`, `/status`, `personaOverhead` (8000 tokens)
+- CSS: `--morgan: #00C7BE` variable, `.from-morgan` color rule
 
-- **Room message count** (api.php line ~518): Total count now respects `room_id` parameter. Was always showing all 618 chatroom messages even when viewing a private room.
-- **Morgan token indicator**: Added to `personaOverhead` map (was showing 0%)
+### Bug Fixes -- Commits 98ba4e8 + 2333f48
 
-### Private Messages Cleared
+| Bug | Root Cause | Fix |
+|-----|-----------|-----|
+| **Morgan not responding to @mentions** | Missing from `PARTICIPANTS_ALL` in api.php -- `@Morgan` never detected | Added to all three PHP participant constants |
+| **Soren posting "(attachment)" messages** | `claude -p` outputs placeholder text for non-text content | Watcher strips `(attachment)` from responses; discards if only placeholders |
+| **Room exchange counter incrementing** (B2) | Rob messages in rooms incremented counter instead of resetting | Changed to `setState('exchange_counter', '0')` |
+| **Rooms stuck in stopped state** (N9) | No auto-clear on Rob substantive message (unlike lobby) | Added auto-clear logic mirroring lobby behavior |
+| **SVG/HTML upload XSS** (S4) | Extension blocklist missing web-executable types | Added `.svg`, `.html`, `.htm`, `.shtml` |
+| **Background tab wasting requests** (P4) | Polling continued in hidden tabs | Added `document.hidden` early return |
+| **Message dedup** (N10) | No guard against duplicate DOM nodes | Added `data-id` check at top of `renderMessage` |
 
-All private rooms, DM conversations, and their messages were deleted from DB per Rob's request. Starting fresh.
+### @all / @team Mention Routing -- Commit 98ba4e8
 
-### GitHub Issues
+| Mention | Expands To |
+|---------|-----------|
+| `@all` | Soren, Atlas, Morgan, Ellison (all AI) |
+| `@team` | Soren, Atlas, Morgan (active AI only) |
 
-- **#4 (Third AI participant)**: CLOSED -- Morgan built and wired in
-- **#5 (Group private rooms)**: CLOSED -- implemented in commit 62311ea
-- **#1 (/commands)**: Still open -- basic commands exist but full scope not complete
+Previously `@all` only expanded to `PARTICIPANTS_ACTIVE_AI` (Soren, Atlas). Now it includes everyone. `@team` added as the new "active AI only" shorthand.
 
-## Files Changed (Uncommitted)
+### Room Creation Simplified -- Commit 98ba4e8
 
-| File | Changes |
-|------|---------|
-| `style.css` | Bottom-up message flow, file input hidden, attach button restyled, file preview improved, scrollbar moved to chat-container |
-| `index.html` | chatContainerEl ref, scroll operations updated, Morgan in PARTICIPANTS arrays + personaOverhead, Plus Jakarta Sans font |
-| `api.php` | Room message count fix (respects room_id), file upload switched to blocklist |
-| `CLAUDE.md` | Added Morgan to participants, key files, dev notes |
-| `ai-participants-overview.md` | NEW -- all four participant profiles |
+- Room name field removed -- auto-generated from selected member names
+- No participants pre-selected by default
+- Title changed from "Create Room" to "New Message"
 
-**Watcher-side changes (not in git):**
-| File | Changes |
-|------|---------|
-| `c:\claude-collab\watcher\config.js` | Morgan added to PARTICIPANTS, mention instructions updated for all |
-| `c:\claude-collab\personas\morgan.md` | Generated persona (three-layer architecture) |
-| `c:\claude-collab\personas\morgan-eval.md` | Full 20-round evaluation transcript |
-| `c:\claude-collab\personas\morgan-journal.md` | Seed journal entry from evaluation |
-| `c:\claude-collab\persona-eval.js` | Supports `--participant=Morgan` with intake notes |
+### Collab Audit Results
 
-## Watcher State
-- Watcher NOT running (PID file shows 24324 but process is dead)
-- Session 12 active but conversation_state is 'stopped'
-- 618 total chatroom messages, 1 in current session (auto-start)
-- All private rooms/DMs cleared
+Ran `/collab-audit` focused on lazy-loading, message-pagination, UI-rendering, security.
+
+| Severity | Count |
+|----------|-------|
+| CRITICAL | 0 |
+| HIGH | 2 (both fixed this session) |
+| MEDIUM | 8 (5 fixed this session) |
+| LOW | 19 |
+| INFORMATIONAL | 5 |
+| **Total** | **34** |
+
+Full report: `c:\xampp\htdocs\claude-collab\audit-report.md`
+
+**Key architectural finding**: Participant registry triple-defined (PHP, JS, watcher config) with no sync mechanism. Morgan omission was the predictable result. Recommended fix: serve participant list from API (`GET ?action=config`).
+
+### Watcher Changes (not in git)
+
+| File | Change |
+|------|--------|
+| `c:\claude-collab\watcher\claude.js` | Strip `(attachment)` placeholder text from `claude -p` output |
+
+## Commits This Session
+
+```
+2333f48 Fix audit findings: exchange counter, room auto-clear, upload security
+98ba4e8 Fix Morgan mentions, @all/@team routing, room creation, attachment filter
+a0b273f UI revamp: iMessage-style light theme, Morgan, lazy history loading
+```
+
+All pushed to `origin/main`.
 
 ## Active Issues
 - **GitHub Issue #1**: /commands for chatroom control (partially implemented)
 - **Knowledge graph**: v3 extraction validated but not wired into watcher startup prompts
 - **Tool execution reliability**: `--max-turns 2` on standard invocation means tools require `[TOOL_REQUEST]` flow
-- **Reactions**: Still client-side only, not persisted to DB
+
+## Remaining Audit Findings (Unfixed)
+
+### Medium
+- **N2**: Room management endpoints have no authorization (any participant can create/delete rooms)
+- **S1**: No authentication; verify Apache binds to 127.0.0.1 only
+- **P1/P2**: Migration runs on every request; add schema_version cache
+
+### Recommended Next Steps (from audit)
+- Serve participant list from API (single source of truth)
+- Combine 3 poll endpoints into single `?action=poll`
+- Add Content-Security-Policy header
+- Remove dead DM code (~200 lines in api.php)
+- Verify Apache `Listen` directive in httpd.conf
 
 ## Pending Work
+- Morgan live chatroom testing (mention detection now works -- needs watcher restart)
 - Wire knowledge graph into watcher startup prompts
 - Fix tool execution reliability (investigate --max-turns interaction)
-- GitHub Issue #1: /commands for chatroom control (full scope)
+- GitHub Issue #1: /commands for chatroom control
 - Stability testing harness (spec S6)
 - message-box/ folder for Soren/Atlas/Morgan feedback
 - Persist reactions to DB
-- Morgan live chatroom testing (configured but untested in conversation)
 - Mobile responsive testing (640px breakpoint exists but untested)
 
 ## Key Context
-- claude-collab at commit `62311ea` + uncommitted changes
-- No commits made this session -- all changes unstaged
-- Plus Jakarta Sans loaded via Google Fonts CDN
-- Morgan ready for live testing -- persona, watcher config, frontend all in place
-- Ellison's `extraInstructions` should mention Morgan (currently says "Soren and Atlas deeply")
-
-## Recent commits
-62311ea Add group private rooms and security hardening
-b2505b0 Add API-side message pruning and Show History toggle
-6673edf Improve collab-audit: synthesis resilience, structured exchanges, focus guidance
-242a277 Fix inactivity auto-close firing on session start
-12859e4 Fix conversation ending enforcement and history endpoint empty body
+- claude-collab at commit `2333f48`, all pushed
+- Morgan should respond after watcher restart (was silently broken due to missing PHP constants)
+- Soren's `(attachment)` messages will stop after watcher restart (filter added)
+- Exchange counter bug was causing potential global AI silence after 6 room messages
+- Room auto-clear now works (Rob can resume stopped rooms by sending a message)
