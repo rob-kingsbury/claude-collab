@@ -84,6 +84,23 @@ Single-pass audits miss things. The exchange loop is where the real value comes 
 - One raises an issue the other missed → the other verifies and adds supporting evidence
 - They converge on higher-quality conclusions than either would produce alone
 
+### Exchange Structure
+
+Exchange rounds use structured categories to prevent re-litigating resolved points:
+- **Confirmed** — findings both agree on (referenced by number, no re-explanation)
+- **Disputed** — findings requiring new evidence to resolve
+- **New** — findings discovered during the exchange
+
+The final round produces a consolidated findings table (Confirmed / Revised / Retracted / New / Unresolved) that feeds directly into synthesis.
+
+### Synthesis Resilience
+
+If synthesis fails (e.g., context too long after many exchange rounds), the pipeline:
+1. **Retries** with a condensed prompt using only the last exchange round
+2. **Falls back** to an auto-generated report with severity counts extracted from the exchange log
+
+This ensures you always get a usable output, even if the final synthesis invocation hits a limit.
+
 ### Severity Ratings
 
 | Rating | Meaning |

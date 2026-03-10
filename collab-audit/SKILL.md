@@ -48,9 +48,14 @@ Identify what the user wants audited:
 - If no path specified, use the current working directory
 - Resolve relative paths to absolute paths
 
-### Step 2: Determine Focus Areas (Optional)
+### Step 2: Determine Focus Areas (Recommended)
 
-If the user mentioned specific concerns (e.g., "check for SQL injection", "look at performance", "review the auth flow"), capture these as focus areas. If not, the audit covers all areas.
+Extract focus areas from user intent — even if not explicitly stated:
+- User mentions specific concerns → use as focus (e.g., "check for SQL injection" → `--focus "security,sql-injection"`)
+- User describes a type of project → infer relevant focus (e.g., web app with auth → `--focus "security,auth,xss,csrf"`)
+- User gives no guidance → suggest 2-3 focus areas based on the project type, or run without focus for broad coverage
+
+**Tip**: Focused audits produce more actionable findings. For large codebases (100+ files), always recommend `--focus` to avoid spreading analysis too thin.
 
 ### Step 3: Run the Audit
 
