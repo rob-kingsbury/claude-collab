@@ -1045,6 +1045,8 @@
         }
 
         function renderMessage(msg) {
+            // Dedup guard: skip if message already in DOM
+            if (messagesEl.querySelector(`.message[data-id="${msg.id}"]`)) return;
             // Insert session divider when transitioning from old messages to current session
             if (!sessionDividerInserted && currentSessionId && msg.session_id == currentSessionId) {
                 if (messagesEl.children.length > 0) {
@@ -1495,7 +1497,7 @@
             }
 
             setInterval(async () => {
-                if (isPolling) return;
+                if (isPolling || document.hidden) return;
                 isPolling = true;
                 try {
                     await fetchMessages();

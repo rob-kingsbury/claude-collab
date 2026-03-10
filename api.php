@@ -1467,16 +1467,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $preview = mb_substr($content, 0, 80);
         $db->prepare("UPDATE rooms SET last_message_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), last_message_preview = ? WHERE id = ?")->execute([$preview, $roomId]);
 
-        // Rob stop signals for this room only
+        // Rob message handling for rooms
         if ($from === 'Rob') {
             setState($db, 'last_rob_message_at', gmdate('Y-m-d\TH:i:s\Z'));
             $stopPatterns = '/^(stop|halt|pause|enough)$/i';
             if (preg_match($stopPatterns, trim($content))) {
                 $db->prepare("UPDATE rooms SET conversation_state = 'stopped' WHERE id = ?")->execute([$roomId]);
+            } else {
+                // Auto-clear stopped state when Rob sends a substantive message (mirrors lobby behavior)
+                $roomState = $db->prepare("SELECT conversation_state FROM rooms WHERE id = ?");
+                $roomState->execute([$roomId]);
+                $rs = $roomState->fetch();
+                if ($rs && $rs['conversation_state'] === 'stopped') {
+                    $db->prepare("UPDATE rooms SET conversation_state = 'active' WHERE id = ?")->execute([$roomId]);
+                }
             }
-            // Increment global exchange counter
-            $ex = (int)getState($db, 'exchange_counter');
-            setState($db, 'exchange_counter', (string)($ex + 1));
+            // Reset exchange counter (Rob messages reset, not increment)
+            setState($db, 'exchange_counter', '0');
         }
 
         echo json_encode(['ok' => true, 'id' => $msgId], JSON_INVALID_UTF8_SUBSTITUTE);
@@ -1618,7 +1625,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $originalName = basename($file['name']);
         $ext = strtolower(pathinfo($originalName, PATHINFO_EXTENSION));
         $blockedExtensions = ['exe', 'msi', 'bat', 'cmd', 'com', 'scr', 'pif', 'vbs', 'vbe',
-                              'wsh', 'wsf', 'ps1', 'dll', 'sys', 'drv', 'cpl', 'inf', 'reg'];
+                              'wsh', 'wsf', 'ps1', 'dll', 'sys', 'drv', 'cpl', 'inf', 'reg',
+                              'svg', 'html', 'htm', 'shtml'];
         if (in_array($ext, $blockedExtensions)) {
             http_response_code(400);
             echo json_encode(['ok' => false, 'error' => "File type .{$ext} is not allowed"]);
