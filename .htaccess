@@ -1,0 +1,18 @@
+# Security: deny access to all files except explicitly allowed ones
+# Prevents direct download of DB, config files, seed scripts, etc.
+
+# Deny all files by default (requires 1+ char filename, so directory index still works)
+<FilesMatch ".+">
+    Require all denied
+</FilesMatch>
+
+# Allow specific public files
+<Files "api.php">
+    Require all granted
+</Files>
+<Files "index.html">
+    Require all granted
+</Files>
+<Files "style.css">
+    Require all granted
+</Files>

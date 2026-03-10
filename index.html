@@ -12,22 +12,19 @@
         <!-- Sidebar -->
         <aside id="sidebar">
             <div id="sidebar-header">
-                <h2>Conversations</h2>
-                <button id="new-dm-btn" title="New DM">+</button>
+                <h2>Rooms</h2>
+                <button id="new-room-btn" title="New Room">+</button>
             </div>
-            <div id="sidebar-search">
-                <input type="text" id="convo-search" placeholder="Search..." />
-            </div>
-            <div id="conversation-list">
-                <!-- Group chat entry (always first) -->
-                <div class="convo-item active" data-type="group" data-id="group">
-                    <div class="convo-avatar group-avatar">#</div>
-                    <div class="convo-info">
-                        <div class="convo-name">Claude Collab</div>
-                        <div class="convo-preview">Group chat</div>
+            <div id="room-list">
+                <!-- Lobby entry (always first) -->
+                <div class="room-item active" data-room-id="lobby">
+                    <div class="room-avatar lobby-avatar">#</div>
+                    <div class="room-info">
+                        <div class="room-name">Claude Collab</div>
+                        <div class="room-preview">Main chatroom</div>
                     </div>
                 </div>
-                <!-- DM entries populated dynamically -->
+                <!-- Private rooms populated dynamically -->
             </div>
         </aside>
 
@@ -97,29 +94,41 @@
         </div>
     </div>
 
-    <!-- New DM modal -->
-    <div id="new-dm-modal" class="hidden">
-        <div class="dm-modal-content">
-            <h3>New Direct Message</h3>
-            <div class="dm-participant-list"></div>
-            <button class="dm-modal-cancel" onclick="document.getElementById('new-dm-modal').classList.add('hidden')">Cancel</button>
+    <!-- New Room modal -->
+    <div id="new-room-modal" class="modal-overlay hidden">
+        <div class="modal-content">
+            <h3>Create Room</h3>
+            <input type="text" id="room-name-input" placeholder="Room name..." maxlength="50" />
+            <div class="room-member-select">
+                <p class="member-label">Members:</p>
+                <div id="room-member-checkboxes"></div>
+            </div>
+            <div class="modal-actions">
+                <button id="room-create-btn" class="btn-primary">Create</button>
+                <button id="room-cancel-btn" class="btn-secondary">Cancel</button>
+            </div>
         </div>
     </div>
 
     <!-- New message notification sound (short beep via Web Audio API) -->
     <script>
         const API = 'api.php';
+        // Participant registry (single source of truth for frontend)
+        const PARTICIPANTS_ALL = ['Rob', 'Soren', 'Atlas', 'Web', 'Ellison'];
+        const PARTICIPANTS_AI = ['Soren', 'Atlas', 'Web', 'Ellison'];
+        const PARTICIPANTS_ACTIVE_AI = ['Soren', 'Atlas'];
+        const MENTION_NAMES = [...PARTICIPANTS_ALL, 'all'];
+        const MENTION_REGEX = new RegExp('@(' + PARTICIPANTS_ALL.join('|') + '|all)\\b', 'gi');
         let currentSender = 'Rob';
         let lastMessageId = 0;
         let isPolling = false;
         let flashInterval = null;
 
-        // --- DM / Sidebar state ---
-        let currentView = 'group'; // 'group' or conversation ID (number)
-        let conversations = [];
-        let dmMessages = [];
-        let lastDmId = 0;
-        let dmRecipient = null; // name of other participant in current DM
+        // --- Room / Sidebar state ---
+        let currentRoomId = null; // null = lobby, number = room ID
+        let rooms = [];
+        let lastMessageIdByRoom = {}; // per-room message cursor {null: 0, 1: 0, ...}
+        let lastViewedAtByRoom = {}; // timestamp when user last viewed each room
         let pendingFiles = []; // files queued for upload
         const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
@@ -147,7 +156,7 @@
         const attachBtn = document.getElementById('attach-btn');
         const filePreview = document.getElementById('file-preview');
         const dropOverlay = document.getElementById('drop-overlay');
-        const convoSearch = document.getElementById('convo-search');
+        // convoSearch removed — rooms don't need sidebar search yet
         let sessionActive = false;
         const senderBtns = document.querySelectorAll('.sender-btn');
 
@@ -344,7 +353,7 @@
         });
 
         // --- @mention autocomplete ---
-        const mentionNames = ['Rob', 'Soren', 'Atlas', 'all', 'Web', 'Ellison'];
+        const mentionNames = MENTION_NAMES;
         const mentionPopup = document.getElementById('mention-popup');
         let mentionStart = -1; // cursor position of the '@'
         let mentionSelected = 0;
@@ -568,8 +577,8 @@
             const content = inputEl.value.trim();
             if (!content && pendingFiles.length === 0) return;
 
-            // Slash command intercept (group only)
-            if (content.startsWith('/') && currentView === 'group') {
+            // Slash command intercept (lobby only)
+            if (content.startsWith('/') && currentRoomId === null) {
                 handleSlashCommand(content);
                 inputEl.value = '';
                 inputEl.focus();
@@ -578,42 +587,26 @@
 
             sendBtn.disabled = true;
 
-            // DM mode
-            if (currentView !== 'group') {
-                try {
-                    const payload = { action: 'dm', from: currentSender, to: dmRecipient, content: content || '', conversation_id: currentView };
-                    const res = await fetch(API, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload)
-                    });
-                    const data = await res.json();
-                    if (data.ok) {
-                        inputEl.value = '';
-                        if (pendingFiles.length > 0) {
-                            const msgId = data.dm_message ? data.dm_message.id : null;
-                            if (msgId) await uploadFiles(msgId, true);
-                        }
-                        await fetchDmMessages(currentView);
-                    }
-                } catch (e) { console.error('DM send failed:', e); }
-                sendBtn.disabled = false;
-                inputEl.focus();
-                return;
-            }
-
-            // Group mode
             try {
+                let payload;
+                if (currentRoomId !== null) {
+                    // Room mode
+                    payload = { action: 'room_message', room_id: currentRoomId, from: currentSender, content: content || '(attachment)' };
+                } else {
+                    // Lobby mode
+                    payload = { from: currentSender, content };
+                }
+
                 const res = await fetch(API, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ from: currentSender, content })
+                    body: JSON.stringify(payload)
                 });
                 const data = await res.json();
                 if (data.ok) {
                     inputEl.value = '';
                     if (pendingFiles.length > 0) {
-                        const msgId = data.message ? data.message.id : null;
+                        const msgId = data.id || (data.message ? data.message.id : null);
                         if (msgId) await uploadFiles(msgId, false);
                     }
                     await fetchMessages();
@@ -651,6 +644,7 @@
             try {
                 const showHistory = document.getElementById('show-history-toggle')?.checked || false;
                 let url = `${API}?action=messages&since=${lastMessageId}`;
+                if (currentRoomId !== null) url += `&room_id=${currentRoomId}`;
                 if (showHistory) url += '&include_history=true';
                 const res = await fetch(url, {cache: 'no-store'});
                 const data = await res.json();
@@ -727,7 +721,7 @@
                 }
 
                 participantStatusEl.innerHTML = '';
-                ['Soren', 'Atlas', 'Web', 'Ellison'].forEach(p => {
+                PARTICIPANTS_AI.forEach(p => {
                     const st = (s['participant_status_' + p] || 'idle').replace(/[^a-z]/g, '');
                     const span = document.createElement('span');
                     span.className = `p-status ${st}`;
@@ -771,7 +765,7 @@
             const container = document.getElementById('token-indicators');
             if (!container) return;
             container.innerHTML = '';
-            ['Soren', 'Atlas'].forEach(p => {
+            PARTICIPANTS_ACTIVE_AI.forEach(p => {
                 const total = tokenAccum + (personaOverhead[p] || 0);
                 const pct = Math.min(100, Math.round((total / contextMax) * 100));
                 const bar = document.createElement('div');
@@ -786,7 +780,7 @@
             const active = [];
 
             // AI participants responding (status = busy)
-            ['Soren', 'Atlas', 'Web', 'Ellison'].forEach(p => {
+            PARTICIPANTS_AI.forEach(p => {
                 if ((stateObj['participant_status_' + p] || 'idle') === 'busy') active.push({ name: p, verb: 'responding' });
             });
 
@@ -887,7 +881,7 @@
                 .replace(/`([^`]+)`/g, '<code>$1</code>')           // inline code
                 .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')    // bold
                 .replace(/\*(.+?)\*/g, '<em>$1</em>')                // italic
-                .replace(/@(Rob|Soren|Atlas|Web|Ellison|all)\b/gi, '<span class="mention">@$1</span>');
+                .replace(MENTION_REGEX, '<span class="mention">@$1</span>');
         }
 
         let sessionDividerInserted = false;
@@ -1103,78 +1097,73 @@
         window.addEventListener('blur', stopHeartbeat);
 
         // --- Sidebar: fetch & render conversations ---
-        async function fetchConversations() {
+        async function fetchRooms() {
             try {
-                const res = await fetch(`${API}?action=conversations&for=${encodeURIComponent(currentSender)}`, {cache: 'no-store'});
+                const res = await fetch(`${API}?action=rooms&for=Rob`, {cache: 'no-store'});
                 const data = await res.json();
                 if (data.ok) {
-                    conversations = data.conversations || [];
-                    renderConversations();
+                    rooms = data.rooms || [];
+                    renderRoomList();
                 }
             } catch (e) { /* non-critical */ }
         }
 
-        function renderConversations() {
-            const list = document.getElementById('conversation-list');
-            const groupEntry = list.querySelector('[data-type="group"]');
+        function renderRoomList() {
+            const list = document.getElementById('room-list');
+            // Keep lobby entry
+            const lobbyEntry = list.querySelector('[data-room-id="lobby"]');
             list.innerHTML = '';
-            if (groupEntry) {
-                groupEntry.classList.toggle('active', currentView === 'group');
-                groupEntry.onclick = () => switchToGroup();
-                list.appendChild(groupEntry);
+            if (lobbyEntry) {
+                lobbyEntry.classList.toggle('active', currentRoomId === null);
+                lobbyEntry.onclick = () => switchToLobby();
+                list.appendChild(lobbyEntry);
             }
 
-            const searchQuery = (convoSearch.value || '').toLowerCase().trim();
-
-            conversations.forEach(c => {
-                const otherName = c.other_participant;
-
-                // Filter by sidebar search
-                if (searchQuery && !otherName.toLowerCase().includes(searchQuery)) return;
-
+            rooms.forEach(room => {
                 const div = document.createElement('div');
-                div.className = `convo-item${currentView == c.id ? ' active' : ''}`;
-                div.dataset.type = 'dm';
-                div.dataset.id = c.id;
+                div.className = `room-item${currentRoomId === room.id ? ' active' : ''}`;
+                div.dataset.roomId = room.id;
 
-                const knownSendersList = ['rob', 'soren', 'atlas', 'web', 'ellison'];
-                const senderKey = otherName.toLowerCase().replace(/[^a-z0-9]/g, '-');
-                const colorVar = knownSendersList.includes(senderKey) ? `var(--${senderKey})` : 'var(--text-dim)';
-                const letter = otherName.charAt(0).toUpperCase();
+                const memberAvatars = (room.members || []).filter(m => m !== 'Rob').slice(0, 3).map(m => {
+                    const key = m.toLowerCase();
+                    return `<span class="room-member-dot" style="background: var(--${key}, var(--text-dim))" title="${m}">${m.charAt(0)}</span>`;
+                }).join('');
 
-                const time = c.last_message_at ? new Date(c.last_message_at.replace(/Z+$/, '') + 'Z').toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '';
+                const time = room.last_message_at ? new Date(room.last_message_at.replace(/Z+$/, '') + 'Z').toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '';
+                const stateIcon = room.conversation_state === 'stopped' ? ' <span class="room-stopped" title="Paused">&#x23F8;</span>' : '';
+
+                const hasUnread = room.last_message_at && currentRoomId !== room.id &&
+                    (!lastViewedAtByRoom[room.id] || room.last_message_at > lastViewedAtByRoom[room.id]);
 
                 div.innerHTML = `
-                    <div class="convo-avatar" style="background: ${colorVar}">${escapeHtml(letter)}</div>
-                    <div class="convo-info">
-                        <div class="convo-name">${escapeHtml(otherName)}</div>
-                        <div class="convo-preview">${escapeHtml(c.last_message_preview || 'No messages yet')}</div>
+                    <div class="room-avatar">&#x1F512;</div>
+                    <div class="room-info">
+                        <div class="room-name">${escapeHtml(room.name)}${stateIcon}</div>
+                        <div class="room-preview">${escapeHtml(room.last_message_preview || 'No messages yet')}</div>
                     </div>
-                    <div class="convo-meta">
-                        ${time ? `<span class="convo-time">${time}</span>` : ''}
-                        ${c.unread_count > 0 ? `<span class="convo-unread">${c.unread_count}</span>` : ''}
+                    <div class="room-meta">
+                        <div class="room-members-row">${memberAvatars}</div>
+                        ${time ? `<span class="room-time">${time}</span>` : ''}
+                        ${hasUnread ? '<span class="room-unread-dot"></span>' : ''}
                     </div>
                 `;
-                div.addEventListener('click', () => switchToDm(c.id, otherName));
+                div.addEventListener('click', () => switchToRoom(room.id, room.name));
                 list.appendChild(div);
             });
         }
 
-        // Filter sidebar on search input
-        convoSearch.addEventListener('input', () => renderConversations());
-
         // --- View switching ---
-        function switchToGroup() {
-            currentView = 'group';
-            dmRecipient = null;
-            lastMessageId = 0;
+        function switchToLobby() {
+            // Mark previous room as viewed
+            if (currentRoomId !== null) lastViewedAtByRoom[currentRoomId] = new Date().toISOString();
+            currentRoomId = null;
+            lastMessageId = lastMessageIdByRoom[null] || 0;
             tokenAccum = 0;
             sessionDividerInserted = false;
             messagesEl.innerHTML = '';
-            document.querySelectorAll('.convo-item').forEach(el => el.classList.remove('active'));
-            document.querySelector('[data-type="group"]')?.classList.add('active');
+            document.querySelectorAll('.room-item').forEach(el => el.classList.remove('active'));
+            document.querySelector('[data-room-id="lobby"]')?.classList.add('active');
 
-            // Show group-specific UI
             document.getElementById('sender-select').style.display = '';
             document.getElementById('participant-status').style.display = '';
             document.getElementById('token-indicators').style.display = '';
@@ -1184,50 +1173,28 @@
             fetchState();
         }
 
-        async function switchToDm(conversationId, otherName) {
-            currentView = conversationId;
-            dmRecipient = otherName;
-            lastDmId = 0;
+        async function switchToRoom(roomId, roomName) {
+            // Mark previous room/lobby as viewed
+            if (currentRoomId !== null) lastViewedAtByRoom[currentRoomId] = new Date().toISOString();
+            currentRoomId = roomId;
+            lastViewedAtByRoom[roomId] = new Date().toISOString();
+            lastMessageId = lastMessageIdByRoom[roomId] || 0;
+            tokenAccum = 0;
+            sessionDividerInserted = false;
             messagesEl.innerHTML = '';
-            document.querySelectorAll('.convo-item').forEach(el => el.classList.remove('active'));
-            document.querySelector(`[data-id="${conversationId}"]`)?.classList.add('active');
+            document.querySelectorAll('.room-item').forEach(el => el.classList.remove('active'));
+            document.querySelector(`[data-room-id="${roomId}"]`)?.classList.add('active');
 
-            // Hide group-specific UI
-            document.getElementById('sender-select').style.display = 'none';
+            // Show sender buttons in rooms too (Rob can send as himself)
+            document.getElementById('sender-select').style.display = '';
             document.getElementById('participant-status').style.display = 'none';
-            document.getElementById('token-indicators').style.display = 'none';
-            document.querySelector('#main-panel header h1').textContent = `DM: ${otherName}`;
+            document.getElementById('token-indicators').style.display = '';
+            document.querySelector('#main-panel header h1').textContent = roomName;
 
-            // Mark as read
-            fetch(API, {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({action: 'dm_read', conversation_id: conversationId, reader: currentSender})
-            }).catch(() => {});
-
-            await fetchDmMessages(conversationId);
-        }
-
-        async function fetchDmMessages(conversationId) {
-            try {
-                const res = await fetch(`${API}?action=dm_messages&conversation_id=${conversationId}&since=${lastDmId}`, {cache: 'no-store'});
-                const data = await res.json();
-                if (data.ok && data.dm_messages && data.dm_messages.length > 0) {
-                    const wasNearBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 80;
-                    data.dm_messages.forEach(msg => {
-                        renderMessage({
-                            id: 'dm-' + msg.id,
-                            participant: msg.sender,
-                            content: msg.content,
-                            timestamp: msg.timestamp,
-                            mentions: [],
-                            attachments: msg.attachments || []
-                        });
-                    });
-                    lastDmId = data.dm_messages[data.dm_messages.length - 1].id;
-                    if (wasNearBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
-                }
-            } catch (e) { console.error('DM fetch failed:', e); }
+            // Reset and fetch room messages
+            lastMessageId = 0;
+            lastMessageIdByRoom[roomId] = 0;
+            await fetchMessages();
         }
 
         // --- File upload (drag/drop + button) ---
@@ -1293,17 +1260,13 @@
             return (bytes / 1048576).toFixed(1) + ' MB';
         }
 
-        async function uploadFiles(messageId, isDm) {
+        async function uploadFiles(messageId) {
             for (const file of pendingFiles) {
                 const formData = new FormData();
                 formData.append('file', file);
                 formData.append('action', 'upload');
                 formData.append('uploaded_by', currentSender);
-                if (isDm) {
-                    formData.append('dm_message_id', messageId);
-                } else {
-                    formData.append('message_id', messageId);
-                }
+                formData.append('message_id', messageId);
                 if (file.size > MAX_FILE_SIZE) {
                     formData.append('override_cap', 'true');
                 }
@@ -1315,44 +1278,61 @@
             renderFilePreview();
         }
 
-        // --- New DM modal ---
-        document.getElementById('new-dm-btn').addEventListener('click', () => {
-            renderNewDmModal();
-            document.getElementById('new-dm-modal').classList.remove('hidden');
+        // --- New Room modal ---
+        document.getElementById('new-room-btn').addEventListener('click', () => {
+            renderRoomModal();
+            document.getElementById('new-room-modal').classList.remove('hidden');
+            document.getElementById('room-name-input').focus();
         });
 
-        function renderNewDmModal() {
-            const participants = ['Rob', 'Soren', 'Atlas', 'Web', 'Ellison'];
-            const list = document.querySelector('.dm-participant-list');
-            list.innerHTML = '';
-            participants.filter(p => p !== currentSender).forEach(p => {
-                const knownSendersList = ['rob', 'soren', 'atlas', 'web', 'ellison'];
-                const senderKey = p.toLowerCase();
-                const colorVar = knownSendersList.includes(senderKey) ? `var(--${senderKey})` : 'var(--text-dim)';
-                const div = document.createElement('div');
-                div.className = 'dm-participant-option';
-                div.innerHTML = `<span class="convo-avatar" style="background: ${colorVar}; width: 28px; height: 28px; font-size: 0.75rem;">${p.charAt(0)}</span> ${escapeHtml(p)}`;
-                div.addEventListener('click', async () => {
-                    document.getElementById('new-dm-modal').classList.add('hidden');
-                    try {
-                        const res = await fetch(API, {
-                            method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({action: 'create_conversation', from: currentSender, with: p})
-                        });
-                        const data = await res.json();
-                        if (data.ok) {
-                            await fetchConversations();
-                            switchToDm(data.conversation.id, p);
-                        }
-                    } catch (e) { console.error('Create DM failed:', e); }
-                });
-                list.appendChild(div);
+        function renderRoomModal() {
+            const container = document.getElementById('room-member-checkboxes');
+            container.innerHTML = '';
+            PARTICIPANTS_ALL.filter(p => p !== 'Rob').forEach(p => {
+                const key = p.toLowerCase();
+                const checked = PARTICIPANTS_ACTIVE_AI.includes(p) ? 'checked' : '';
+                const label = document.createElement('label');
+                label.className = 'member-checkbox';
+                label.innerHTML = `
+                    <input type="checkbox" value="${p}" ${checked} />
+                    <span class="member-avatar" style="background: var(--${key}, var(--text-dim))">${p.charAt(0)}</span>
+                    <span>${escapeHtml(p)}</span>
+                `;
+                container.appendChild(label);
             });
+            document.getElementById('room-name-input').value = '';
         }
 
+        document.getElementById('room-create-btn').addEventListener('click', async () => {
+            const name = document.getElementById('room-name-input').value.trim();
+            if (!name) { document.getElementById('room-name-input').focus(); return; }
+
+            const checkboxes = document.querySelectorAll('#room-member-checkboxes input:checked');
+            const members = ['Rob', ...Array.from(checkboxes).map(cb => cb.value)];
+
+            try {
+                const res = await fetch(API, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({action: 'create_room', name, members})
+                });
+                const data = await res.json();
+                if (data.ok) {
+                    document.getElementById('new-room-modal').classList.add('hidden');
+                    await fetchRooms();
+                    switchToRoom(data.room.id, data.room.name);
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            } catch (e) { console.error('Create room failed:', e); }
+        });
+
+        document.getElementById('room-cancel-btn').addEventListener('click', () => {
+            document.getElementById('new-room-modal').classList.add('hidden');
+        });
+
         // Close modal on backdrop click
-        document.getElementById('new-dm-modal').addEventListener('click', (e) => {
+        document.getElementById('new-room-modal').addEventListener('click', (e) => {
             if (e.target === e.currentTarget) {
                 e.currentTarget.classList.add('hidden');
             }
@@ -1362,8 +1342,7 @@
         async function startPolling(intervalMs = 2000) {
             await fetchState(); // Must run first so currentSessionId is set before rendering messages
             await fetchMessages();
-            await fetchConversations();
-            renderNewDmModal();
+            await fetchRooms();
 
             // Auto-start session if not active
             if (!sessionActive) {
@@ -1387,13 +1366,9 @@
                 if (isPolling) return;
                 isPolling = true;
                 try {
-                    if (currentView === 'group') {
-                        await fetchMessages();
-                    } else {
-                        await fetchDmMessages(currentView);
-                    }
+                    await fetchMessages();
                     await fetchState();
-                    fetchConversations(); // Always refresh sidebar (non-blocking)
+                    fetchRooms(); // Always refresh sidebar (non-blocking)
                 } finally {
                     isPolling = false;
                 }
@@ -1402,13 +1377,9 @@
             // Catch up immediately when tab becomes visible (Chrome throttles bg tabs)
             document.addEventListener('visibilitychange', () => {
                 if (!document.hidden && !isPolling) {
-                    if (currentView === 'group') {
-                        fetchMessages();
-                    } else {
-                        fetchDmMessages(currentView);
-                    }
+                    fetchMessages();
                     fetchState();
-                    fetchConversations();
+                    fetchRooms();
                 }
             });
         }

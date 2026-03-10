@@ -1,3 +1,7 @@
+# Allow access to uploaded files (overrides root .htaccess deny)
+Order deny,allow
+Allow from all
+
 # Prevent PHP execution in uploads directory
 php_flag engine off
 AddHandler default-handler .php .phtml .phar

@@ -27,14 +27,23 @@
 
 header('Content-Type: application/json');
 header('Cache-Control: no-cache, no-store, must-revalidate');
-header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type');
+$allowedOrigins = ['http://localhost', 'http://127.0.0.1'];
+$origin = $_SERVER['HTTP_ORIGIN'] ?? '';
+if (in_array($origin, $allowedOrigins)) {
+    header("Access-Control-Allow-Origin: $origin");
+    header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
+    header('Access-Control-Allow-Headers: Content-Type');
+}
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(204);
     exit;
 }
+
+// --- Participant Registry (single source of truth) ---
+const PARTICIPANTS_ALL = ['Rob', 'Soren', 'Atlas', 'Web', 'System', 'Ellison'];
+const PARTICIPANTS_AI  = ['Soren', 'Atlas', 'Ellison'];  // AI participants (for status, routing)
+const PARTICIPANTS_ACTIVE_AI = ['Soren', 'Atlas'];        // Auto-responding AIs (@all targets)
 
 // --- Database ---
 $DB_PATH = __DIR__ . '/chatroom.db';
@@ -128,6 +137,29 @@ function initDb(PDO $db): void {
         );
         CREATE INDEX IF NOT EXISTS idx_attachments_message ON file_attachments(message_id);
         CREATE INDEX IF NOT EXISTS idx_attachments_dm ON file_attachments(dm_message_id);
+
+        CREATE TABLE IF NOT EXISTS rooms (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            created_by TEXT NOT NULL DEFAULT 'Rob',
+            created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            conversation_state TEXT DEFAULT 'active',
+            last_message_at TEXT DEFAULT NULL,
+            last_message_preview TEXT DEFAULT NULL,
+            archived INTEGER DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS room_members (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            room_id INTEGER NOT NULL,
+            participant TEXT NOT NULL,
+            added_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            FOREIGN KEY (room_id) REFERENCES rooms(id),
+            UNIQUE(room_id, participant)
+        );
+        CREATE INDEX IF NOT EXISTS idx_room_members_room ON room_members(room_id);
+        CREATE INDEX IF NOT EXISTS idx_room_members_participant ON room_members(participant);
+        CREATE INDEX IF NOT EXISTS idx_messages_room ON messages(room_id);
     ");
 
     // Initialize session state defaults
@@ -254,6 +286,36 @@ function migrateDb(PDO $db): void {
         $db->exec("ALTER TABLE messages ADD COLUMN has_attachment INTEGER DEFAULT 0");
     }
 
+    // Add rooms tables
+    $db->exec("
+        CREATE TABLE IF NOT EXISTS rooms (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            created_by TEXT NOT NULL DEFAULT 'Rob',
+            created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            conversation_state TEXT DEFAULT 'active',
+            last_message_at TEXT DEFAULT NULL,
+            last_message_preview TEXT DEFAULT NULL,
+            archived INTEGER DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS room_members (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            room_id INTEGER NOT NULL,
+            participant TEXT NOT NULL,
+            added_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            FOREIGN KEY (room_id) REFERENCES rooms(id),
+            UNIQUE(room_id, participant)
+        );
+        CREATE INDEX IF NOT EXISTS idx_room_members_room ON room_members(room_id);
+        CREATE INDEX IF NOT EXISTS idx_room_members_participant ON room_members(participant);
+    ");
+
+    // Add room_id column to messages if missing
+    if (!in_array('room_id', $msgColNames)) {
+        $db->exec("ALTER TABLE messages ADD COLUMN room_id INTEGER DEFAULT NULL");
+    }
+    $db->exec("CREATE INDEX IF NOT EXISTS idx_messages_room ON messages(room_id)");
+
     // One-time migration: assign orphan NULL-session messages to session 1
     // This prevents historical messages from bleeding into every new session's AI context
     $orphanCount = $db->query("SELECT COUNT(*) as cnt FROM messages WHERE session_id IS NULL")->fetch()['cnt'];
@@ -369,8 +431,7 @@ function getAttachmentsForDmMessages(PDO $db, array $dmMessageIds): array {
 
 // --- Helper: validate participant name ---
 function isValidParticipant(string $name): bool {
-    $knownParticipants = ['Rob', 'Soren', 'Atlas', 'Web', 'System', 'Ellison'];
-    if (in_array($name, $knownParticipants)) return true;
+    if (in_array($name, PARTICIPANTS_ALL)) return true;
     return (bool)preg_match('/^[a-zA-Z0-9 _\-\[\]]{1,20}$/', $name);
 }
 
@@ -384,10 +445,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         $limit = (int)($_GET['limit'] ?? 0);
         $session = $_GET['session'] ?? '';
         $includeHistory = ($_GET['include_history'] ?? 'false') === 'true';
+        $roomId = isset($_GET['room_id']) ? (int)$_GET['room_id'] : null;
 
         $sql = "SELECT * FROM messages";
         $params = [];
         $conditions = [];
+
+        // Room filtering: specific room_id, or lobby (NULL) by default
+        if ($roomId !== null) {
+            $conditions[] = "room_id = ?";
+            $params[] = $roomId;
+        } else {
+            $conditions[] = "room_id IS NULL";
+        }
 
         if ($since > 0) {
             $conditions[] = "id > ?";
@@ -461,8 +531,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
     // --- Pending (for trigger system) ---
     if ($action === 'pending') {
         $for = $_GET['for'] ?? '';
-        $validParticipants = ['Rob', 'Soren', 'Atlas', 'Web', 'Ellison'];
-        if ($for === '' || !in_array($for, $validParticipants)) {
+        if ($for === '' || !isValidParticipant($for)) {
             http_response_code(400);
             echo json_encode(['ok' => false, 'error' => 'Missing or invalid "for" parameter']);
             exit;
@@ -489,14 +558,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
 
         // Safe LIKE query — $for is validated against allowlist above
         // Filter to current session only (orphan NULL messages have been migrated to session 1)
+        // Optional room_id filter for room-scoped pending
         $currentId = getCurrentSessionId($db);
+        $pendingRoomId = isset($_GET['room_id']) ? (int)$_GET['room_id'] : null;
+
+        $pendingSql = "SELECT * FROM messages WHERE mentions LIKE ? AND read_by NOT LIKE ?";
+        $pendingParams = ['%"' . $for . '"%', '%"' . $for . '"%'];
+
         if ($currentId !== null) {
-            $stmt = $db->prepare("SELECT * FROM messages WHERE mentions LIKE ? AND read_by NOT LIKE ? AND session_id = ? ORDER BY id ASC");
-            $stmt->execute(['%"' . $for . '"%', '%"' . $for . '"%', $currentId]);
-        } else {
-            $stmt = $db->prepare("SELECT * FROM messages WHERE mentions LIKE ? AND read_by NOT LIKE ? ORDER BY id ASC");
-            $stmt->execute(['%"' . $for . '"%', '%"' . $for . '"%']);
+            $pendingSql .= " AND session_id = ?";
+            $pendingParams[] = $currentId;
         }
+
+        if ($pendingRoomId !== null) {
+            $pendingSql .= " AND room_id = ?";
+            $pendingParams[] = $pendingRoomId;
+        } else {
+            $pendingSql .= " AND room_id IS NULL";
+        }
+
+        $pendingSql .= " ORDER BY id ASC";
+        $stmt = $db->prepare($pendingSql);
+        $stmt->execute($pendingParams);
         $pending = $stmt->fetchAll();
 
         foreach ($pending as &$m) {
@@ -521,14 +604,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
     if ($action === 'history') {
         $mode = $_GET['mode'] ?? 'full';
         $since = (int)($_GET['since'] ?? 0);
+        $historyRoomId = isset($_GET['room_id']) ? (int)$_GET['room_id'] : null;
 
         // Session-scoped: only current session + orphan messages
         $currentId = getCurrentSessionId($db);
         $sessionFilter = ($currentId !== null) ? " AND session_id = $currentId" : "";
+        // Room-scoped: filter to specific room or lobby (NULL)
+        if ($historyRoomId !== null) {
+            $roomFilter = " AND room_id = " . (int)$historyRoomId;
+        } else {
+            $roomFilter = " AND room_id IS NULL";
+        }
 
         if ($mode === 'since' && $since > 0) {
             // Mid-session: only new messages
-            $stmt = $db->prepare("SELECT * FROM messages WHERE id > ?$sessionFilter ORDER BY id ASC");
+            $stmt = $db->prepare("SELECT * FROM messages WHERE id > ?$sessionFilter$roomFilter ORDER BY id ASC");
             $stmt->execute([$since]);
             $messages = $stmt->fetchAll();
             foreach ($messages as &$m) {
@@ -547,7 +637,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         $afterId = $summary ? (int)$summary['covers_up_to_message_id'] : 0;
         $recentLimit = 20;
 
-        $stmt = $db->prepare("SELECT * FROM messages WHERE id > ?$sessionFilter ORDER BY id DESC LIMIT " . (int)$recentLimit);
+        $stmt = $db->prepare("SELECT * FROM messages WHERE id > ?$sessionFilter$roomFilter ORDER BY id DESC LIMIT " . (int)$recentLimit);
         $stmt->execute([$afterId]);
         $messages = array_reverse($stmt->fetchAll()); // Reverse to chronological
 
@@ -627,12 +717,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
 
     // --- Participant status ---
     if ($action === 'status') {
-        echo json_encode(['ok' => true, 'status' => [
-            'Soren' => getState($db, 'participant_status_Soren'),
-            'Atlas' => getState($db, 'participant_status_Atlas'),
-            'Web' => getState($db, 'participant_status_Web'),
-            'Ellison' => getState($db, 'participant_status_Ellison'),
-        ]]);
+        $statusMap = [];
+        foreach (PARTICIPANTS_AI as $p) {
+            $statusMap[$p] = getState($db, 'participant_status_' . $p);
+        }
+        echo json_encode(['ok' => true, 'status' => $statusMap]);
         exit;
     }
 
@@ -657,6 +746,61 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         $conversations = $stmt->fetchAll();
 
         echo json_encode(['ok' => true, 'conversations' => $conversations], JSON_INVALID_UTF8_SUBSTITUTE);
+        exit;
+    }
+
+    // --- Rooms list ---
+    if ($action === 'rooms') {
+        $for = $_GET['for'] ?? '';
+        if ($for !== '' && !isValidParticipant($for)) {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'error' => 'Invalid "for" parameter']);
+            exit;
+        }
+
+        if ($for !== '') {
+            // Rooms where participant is a member
+            $stmt = $db->prepare("
+                SELECT r.*, GROUP_CONCAT(rm2.participant) as member_list
+                FROM rooms r
+                JOIN room_members rm ON rm.room_id = r.id AND rm.participant = ?
+                LEFT JOIN room_members rm2 ON rm2.room_id = r.id
+                WHERE r.archived = 0
+                GROUP BY r.id
+                ORDER BY r.last_message_at DESC NULLS LAST
+            ");
+            $stmt->execute([$for]);
+        } else {
+            $stmt = $db->query("
+                SELECT r.*, GROUP_CONCAT(rm.participant) as member_list
+                FROM rooms r
+                LEFT JOIN room_members rm ON rm.room_id = r.id
+                WHERE r.archived = 0
+                GROUP BY r.id
+                ORDER BY r.last_message_at DESC NULLS LAST
+            ");
+        }
+        $rooms = $stmt->fetchAll();
+        foreach ($rooms as &$room) {
+            $room['members'] = $room['member_list'] ? explode(',', $room['member_list']) : [];
+            unset($room['member_list']);
+        }
+
+        echo json_encode(['ok' => true, 'rooms' => $rooms], JSON_INVALID_UTF8_SUBSTITUTE);
+        exit;
+    }
+
+    // --- Room members ---
+    if ($action === 'room_members') {
+        $roomId = (int)($_GET['room_id'] ?? 0);
+        if ($roomId === 0) {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'error' => 'Missing room_id']);
+            exit;
+        }
+        $stmt = $db->prepare("SELECT participant, added_at FROM room_members WHERE room_id = ? ORDER BY added_at");
+        $stmt->execute([$roomId]);
+        echo json_encode(['ok' => true, 'members' => $stmt->fetchAll()]);
         exit;
     }
 
@@ -768,9 +912,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Allow empty content if caller will attach files
         if ($content === '') $content = '(attachment)';
 
-        $knownParticipants = ['Rob', 'Soren', 'Atlas', 'Web', 'System', 'Ellison'];
         // Allow known participants or guest handles (alphanumeric + spaces, 1-20 chars)
-        $isKnown = in_array($from, $knownParticipants);
+        $isKnown = isValidParticipant($from);
         $isValidGuest = !$isKnown && preg_match('/^[a-zA-Z0-9 _\-\[\]]{1,20}$/', $from);
         if (!$isKnown && !$isValidGuest) {
             http_response_code(400);
@@ -778,20 +921,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         }
 
-        // Auto-detect @mentions (@all expands to Soren + Atlas)
-        // Normalize to canonical case so pending matching works correctly
-        preg_match_all('/@(Rob|Soren|Atlas|Web|Ellison|all)\b/i', $content, $matches);
+        // Auto-detect @mentions (@all expands to active AI participants)
+        // Build mention regex dynamically from participant registry
+        $mentionPattern = implode('|', array_map('preg_quote', PARTICIPANTS_ALL)) . '|all';
+        preg_match_all('/@(' . $mentionPattern . ')\b/i', $content, $matches);
         $raw = $input['mentions'] ?? $matches[1] ?? [];
-        $canonicalNames = [
-            'rob' => 'Rob', 'soren' => 'Soren', 'atlas' => 'Atlas',
-            'web' => 'Web', 'ellison' => 'Ellison', 'all' => 'all'
-        ];
+        // Build canonical name map dynamically
+        $canonicalNames = ['all' => 'all'];
+        foreach (PARTICIPANTS_ALL as $p) { $canonicalNames[strtolower($p)] = $p; }
         $expanded = [];
         foreach ($raw as $m) {
             $normalized = $canonicalNames[strtolower($m)] ?? $m;
             if (strtolower($normalized) === 'all') {
-                $expanded[] = 'Soren';
-                $expanded[] = 'Atlas';
+                foreach (PARTICIPANTS_ACTIVE_AI as $ai) { $expanded[] = $ai; }
             } else {
                 $expanded[] = $normalized;
             }
@@ -906,8 +1048,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($action === 'set_status') {
         $participant = $input['participant'] ?? '';
         $state = $input['state'] ?? '';
-        $validStatusParticipants = ['Soren', 'Atlas', 'Web', 'Ellison'];
-        if (!in_array($participant, $validStatusParticipants) || !in_array($state, ['busy', 'idle', 'waiting_approval'])) {
+        if (!in_array($participant, PARTICIPANTS_AI) || !in_array($state, ['busy', 'idle', 'waiting_approval'])) {
             http_response_code(400);
             echo json_encode(['ok' => false, 'error' => 'Invalid participant or state']);
             exit;
@@ -1148,6 +1289,207 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
+    // --- Create a private room (Rob only) ---
+    if ($action === 'create_room') {
+        $name = trim($input['name'] ?? '');
+        $members = $input['members'] ?? [];
+
+        if ($name === '' || strlen($name) > 50) {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'error' => 'Room name required (1-50 chars)']);
+            exit;
+        }
+        if (!is_array($members)) {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'error' => 'Members must be an array']);
+            exit;
+        }
+
+        // Validate all members
+        foreach ($members as $m) {
+            if (!isValidParticipant($m)) {
+                http_response_code(400);
+                echo json_encode(['ok' => false, 'error' => "Invalid member: $m"]);
+                exit;
+            }
+        }
+
+        // Rob is always included
+        if (!in_array('Rob', $members)) {
+            array_unshift($members, 'Rob');
+        }
+        $members = array_unique($members);
+
+        // Create room
+        $stmt = $db->prepare("INSERT INTO rooms (name, created_by) VALUES (?, 'Rob')");
+        $stmt->execute([$name]);
+        $roomId = (int)$db->lastInsertId();
+
+        // Add members
+        $memberStmt = $db->prepare("INSERT INTO room_members (room_id, participant) VALUES (?, ?)");
+        foreach ($members as $m) {
+            $memberStmt->execute([$roomId, $m]);
+        }
+
+        echo json_encode([
+            'ok' => true,
+            'room' => [
+                'id' => $roomId,
+                'name' => $name,
+                'members' => array_values($members),
+                'conversation_state' => 'active'
+            ]
+        ]);
+        exit;
+    }
+
+    // --- Post a message to a room ---
+    if ($action === 'room_message') {
+        $roomId = (int)($input['room_id'] ?? 0);
+        $from = trim($input['from'] ?? '');
+        $content = trim($input['content'] ?? '');
+
+        if ($roomId === 0) {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'error' => 'Missing room_id']);
+            exit;
+        }
+        if ($from === '') {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'error' => 'Missing "from"']);
+            exit;
+        }
+        if ($content === '') {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'error' => 'Missing content']);
+            exit;
+        }
+
+        // Verify room exists
+        $roomStmt = $db->prepare("SELECT * FROM rooms WHERE id = ? AND archived = 0");
+        $roomStmt->execute([$roomId]);
+        $room = $roomStmt->fetch();
+        if (!$room) {
+            http_response_code(404);
+            echo json_encode(['ok' => false, 'error' => 'Room not found']);
+            exit;
+        }
+
+        // Verify sender is a member
+        $memberCheck = $db->prepare("SELECT 1 FROM room_members WHERE room_id = ? AND participant = ?");
+        $memberCheck->execute([$roomId, $from]);
+        if (!$memberCheck->fetch()) {
+            http_response_code(403);
+            echo json_encode(['ok' => false, 'error' => "$from is not a member of this room"]);
+            exit;
+        }
+
+        // Parse @mentions scoped to room members
+        $roomMembersStmt = $db->prepare("SELECT participant FROM room_members WHERE room_id = ?");
+        $roomMembersStmt->execute([$roomId]);
+        $roomMemberNames = $roomMembersStmt->fetchAll(PDO::FETCH_COLUMN);
+        $mentionPattern = implode('|', array_map('preg_quote', $roomMemberNames)) . '|all';
+        preg_match_all('/@(' . $mentionPattern . ')\b/i', $content, $matches);
+        $raw = $matches[1] ?? [];
+        $canonicalNames = ['all' => 'all'];
+        foreach (PARTICIPANTS_ALL as $p) { $canonicalNames[strtolower($p)] = $p; }
+        $expanded = [];
+        foreach ($raw as $m) {
+            $normalized = $canonicalNames[strtolower($m)] ?? $m;
+            if (strtolower($normalized) === 'all') {
+                // @all in a room = all AI members of this room
+                foreach ($roomMemberNames as $rm) {
+                    if (in_array($rm, PARTICIPANTS_AI)) $expanded[] = $rm;
+                }
+            } else {
+                $expanded[] = $normalized;
+            }
+        }
+        $mentions = json_encode(array_values(array_unique($expanded)));
+
+        $tokenEst = estimateTokens($content);
+        $sessionId = getCurrentSessionId($db);
+
+        $stmt = $db->prepare("INSERT INTO messages (participant, content, mentions, token_estimate, session_id, room_id) VALUES (?, ?, ?, ?, ?, ?)");
+        $stmt->execute([$from, $content, $mentions, $tokenEst, $sessionId, $roomId]);
+        $msgId = (int)$db->lastInsertId();
+
+        // Update room metadata
+        $preview = mb_substr($content, 0, 80);
+        $db->prepare("UPDATE rooms SET last_message_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), last_message_preview = ? WHERE id = ?")->execute([$preview, $roomId]);
+
+        // Rob stop signals for this room only
+        if ($from === 'Rob') {
+            setState($db, 'last_rob_message_at', gmdate('Y-m-d\TH:i:s\Z'));
+            $stopPatterns = '/^(stop|halt|pause|enough)$/i';
+            if (preg_match($stopPatterns, trim($content))) {
+                $db->prepare("UPDATE rooms SET conversation_state = 'stopped' WHERE id = ?")->execute([$roomId]);
+            }
+            // Increment global exchange counter
+            $ex = (int)getState($db, 'exchange_counter');
+            setState($db, 'exchange_counter', (string)($ex + 1));
+        }
+
+        echo json_encode(['ok' => true, 'id' => $msgId], JSON_INVALID_UTF8_SUBSTITUTE);
+        exit;
+    }
+
+    // --- Add member to room ---
+    if ($action === 'add_room_member') {
+        $roomId = (int)($input['room_id'] ?? 0);
+        $participant = trim($input['participant'] ?? '');
+
+        if ($roomId === 0 || !isValidParticipant($participant)) {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'error' => 'Invalid room_id or participant']);
+            exit;
+        }
+
+        $stmt = $db->prepare("INSERT OR IGNORE INTO room_members (room_id, participant) VALUES (?, ?)");
+        $stmt->execute([$roomId, $participant]);
+        echo json_encode(['ok' => true]);
+        exit;
+    }
+
+    // --- Remove member from room ---
+    if ($action === 'remove_room_member') {
+        $roomId = (int)($input['room_id'] ?? 0);
+        $participant = trim($input['participant'] ?? '');
+
+        if ($roomId === 0 || $participant === '') {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'error' => 'Invalid room_id or participant']);
+            exit;
+        }
+        if ($participant === 'Rob') {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'error' => 'Cannot remove Rob from a room']);
+            exit;
+        }
+
+        $stmt = $db->prepare("DELETE FROM room_members WHERE room_id = ? AND participant = ?");
+        $stmt->execute([$roomId, $participant]);
+        echo json_encode(['ok' => true]);
+        exit;
+    }
+
+    // --- Set room conversation state ---
+    if ($action === 'set_room_state') {
+        $roomId = (int)($input['room_id'] ?? 0);
+        $state = trim($input['state'] ?? '');
+
+        if ($roomId === 0 || !in_array($state, ['active', 'stopped'])) {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'error' => 'Invalid room_id or state']);
+            exit;
+        }
+
+        $stmt = $db->prepare("UPDATE rooms SET conversation_state = ? WHERE id = ?");
+        $stmt->execute([$state, $roomId]);
+        echo json_encode(['ok' => true]);
+        exit;
+    }
+
     // --- File upload ---
     if ($action === 'upload') {
         if (empty($_FILES['file'])) {
@@ -1201,8 +1543,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Block executable extensions
         $originalName = basename($file['name']);
         $ext = strtolower(pathinfo($originalName, PATHINFO_EXTENSION));
-        $blockedExtensions = ['exe', 'bat', 'cmd', 'ps1', 'com', 'scr', 'vbs', 'wsf', 'msi', 'php', 'phtml', 'phar'];
-        if (in_array($ext, $blockedExtensions)) {
+        $allowedExtensions = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'ico', 'svg',
+                              'txt', 'md', 'log', 'csv', 'json', 'xml',
+                              'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
+                              'zip', 'tar', 'gz', 'mp3', 'mp4', 'wav', 'ogg', 'webm'];
+        if (!in_array($ext, $allowedExtensions)) {
             http_response_code(400);
             echo json_encode(['ok' => false, 'error' => "File type .{$ext} is not allowed"]);
             exit;

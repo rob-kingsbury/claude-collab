@@ -42,5 +42,12 @@ c\:*
 # Message box (AI feedback for Rob)
 message-box/
 
+# Uploaded files (keep .htaccess)
+uploads/*
+!uploads/.htaccess
+
 # Claude temp files
 tmpclaude-*
+
+# Audit reports (generated)
+audit-report.md
