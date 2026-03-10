@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Claude Collab Chatroom</title>
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap">
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -12,16 +12,18 @@
         <!-- Sidebar -->
         <aside id="sidebar">
             <div id="sidebar-header">
-                <h2>Rooms</h2>
+                <h2>Messages</h2>
                 <button id="new-room-btn" title="New Room">+</button>
             </div>
             <div id="room-list">
                 <!-- Lobby entry (always first) -->
                 <div class="room-item active" data-room-id="lobby">
-                    <div class="room-avatar lobby-avatar">#</div>
+                    <div class="room-avatar lobby-avatar">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                    </div>
                     <div class="room-info">
-                        <div class="room-name">Claude Collab</div>
-                        <div class="room-preview">Main chatroom</div>
+                        <div class="room-name">Everyone</div>
+                        <div class="room-preview">Group chat</div>
                     </div>
                 </div>
                 <!-- Private rooms populated dynamically -->
@@ -29,7 +31,7 @@
         </aside>
 
         <!-- Main chat area -->
-        <div id="main-panel">
+        <div id="main-panel" style="position:relative">
             <header>
                 <div id="header-left">
                     <h1>Claude Collab</h1>
@@ -61,7 +63,9 @@
             </div>
 
             <main id="chat-container">
-                <div id="messages"></div>
+                <div id="messages">
+                    <div id="history-loader" style="display:none"><span class="typing-dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span> Loading history...</div>
+                </div>
                 <div id="typing-indicator" class="typing-indicator hidden">
                     <span class="typing-sender"></span>
                     <span class="typing-dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
@@ -73,7 +77,7 @@
                     <button class="sender-btn active" data-sender="Rob">Rob</button>
                     <button class="sender-btn" data-sender="Soren">Soren</button>
                     <button class="sender-btn" data-sender="Atlas">Atlas</button>
-                    <button class="sender-btn" data-sender="Web">Web</button>
+                    <button class="sender-btn" data-sender="Morgan">Morgan</button>
                     <button class="sender-btn guest-btn" data-sender="Guest">Guest</button>
                     <input type="text" id="guest-handle" class="hidden" placeholder="Handle..." maxlength="20" />
                 </div>
@@ -83,14 +87,19 @@
                         <div id="mention-popup" class="mention-popup hidden"></div>
                     </div>
                     <input type="file" id="file-input" class="hidden" multiple />
-                    <button id="attach-btn" title="Attach file">&#x1F4CE;</button>
-                    <button id="send-btn">Send</button>
+                    <button id="attach-btn" title="Attach file"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button>
+                    <button id="send-btn" title="Send">&#x2191;</button>
                 </div>
                 <div id="file-preview" class="hidden"></div>
-                <div id="drop-overlay" class="hidden">Drop files here</div>
                 <div id="participant-status"></div>
                 <div id="token-indicators"></div>
             </footer>
+            <div id="drop-overlay" class="hidden">
+                <div class="drop-overlay-content">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                    <span>Drop files to attach</span>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -114,9 +123,9 @@
     <script>
         const API = 'api.php';
         // Participant registry (single source of truth for frontend)
-        const PARTICIPANTS_ALL = ['Rob', 'Soren', 'Atlas', 'Web', 'Ellison'];
-        const PARTICIPANTS_AI = ['Soren', 'Atlas', 'Web', 'Ellison'];
-        const PARTICIPANTS_ACTIVE_AI = ['Soren', 'Atlas'];
+        const PARTICIPANTS_ALL = ['Rob', 'Soren', 'Atlas', 'Morgan', 'Ellison'];
+        const PARTICIPANTS_AI = ['Soren', 'Atlas', 'Morgan', 'Ellison'];
+        const PARTICIPANTS_ACTIVE_AI = ['Soren', 'Atlas', 'Morgan'];
         const MENTION_NAMES = [...PARTICIPANTS_ALL, 'all'];
         const MENTION_REGEX = new RegExp('@(' + PARTICIPANTS_ALL.join('|') + '|all)\\b', 'gi');
         let currentSender = 'Rob';
@@ -129,6 +138,9 @@
         let rooms = [];
         let lastMessageIdByRoom = {}; // per-room message cursor {null: 0, 1: 0, ...}
         let lastViewedAtByRoom = {}; // timestamp when user last viewed each room
+        let oldestLoadedId = null; // oldest message ID in the DOM (for lazy-loading history)
+        let loadingOlder = false; // prevents concurrent scroll-back fetches
+        let hasMoreHistory = false; // API tells us if older messages exist
         let pendingFiles = []; // files queued for upload
         const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
@@ -136,6 +148,7 @@
 
         // --- DOM refs ---
         const messagesEl = document.getElementById('messages');
+        const chatContainerEl = document.getElementById('chat-container');
         const inputEl = document.getElementById('message-input');
         const sendBtn = document.getElementById('send-btn');
         const countEl = document.getElementById('message-count');
@@ -332,9 +345,19 @@
         // --- Show History toggle ---
         document.getElementById('show-history-toggle').addEventListener('change', () => {
             lastMessageId = 0;
+            oldestLoadedId = null;
+            hasMoreHistory = false;
             sessionDividerInserted = false;
-            messagesEl.innerHTML = '';
+            messagesEl.innerHTML = '<div id="history-loader" style="display:none"><span class="typing-dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span> Loading history...</div>';
             fetchMessages();
+        });
+
+        // --- Scroll-to-top: lazy-load older messages ---
+        chatContainerEl.addEventListener('scroll', () => {
+            if (chatContainerEl.scrollTop < 100) {
+                const showHistory = document.getElementById('show-history-toggle')?.checked || false;
+                if (showHistory) loadOlderMessages();
+            }
         });
 
         // --- Typing indicator (Rob priority enforcement, throttled to 1 POST per 3s) ---
@@ -487,7 +510,7 @@
             div.className = 'message from-system local-cmd';
             div.innerHTML = `<div class="msg-content">${renderMarkdown(text)}</div>`;
             messagesEl.appendChild(div);
-            messagesEl.scrollTop = messagesEl.scrollHeight;
+            chatContainerEl.scrollTop = chatContainerEl.scrollHeight;
         }
 
         function cmdHelp() {
@@ -507,7 +530,7 @@
                     `**Rob:** ${s.rob_focused === 'true' ? 'present' : 'away'}`,
                     `**Soren:** ${s.participant_status_Soren || 'idle'}`,
                     `**Atlas:** ${s.participant_status_Atlas || 'idle'}`,
-                    `**Web:** ${s.participant_status_Web || 'idle'}`,
+                    `**Morgan:** ${s.participant_status_Morgan || 'idle'}`,
                     `**Ellison:** ${s.participant_status_Ellison || 'idle'}`,
                 ];
                 showSystemLocal(lines.join('\n'));
@@ -653,13 +676,19 @@
 
                 if (data.ok && data.messages && data.messages.length > 0) {
                     // Check if user is near bottom before appending
-                    const wasNearBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 80;
+                    const wasNearBottom = chatContainerEl.scrollHeight - chatContainerEl.scrollTop - chatContainerEl.clientHeight < 80;
 
                     data.messages.forEach(m => { addTokenEstimate(m); renderMessage(m); });
                     lastMessageId = data.messages[data.messages.length - 1].id;
 
+                    // Track oldest loaded message for lazy-loading
+                    if (oldestLoadedId === null || data.messages[0].id < oldestLoadedId) {
+                        oldestLoadedId = data.messages[0].id;
+                    }
+                    if (data.has_more !== undefined) hasMoreHistory = data.has_more;
+
                     // Only auto-scroll if user was already near the bottom
-                    if (wasNearBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
+                    if (wasNearBottom) chatContainerEl.scrollTop = chatContainerEl.scrollHeight;
 
                     // Notify: blink tab + sound + taskbar flash if window not focused
                     if (!document.hasFocus()) {
@@ -687,6 +716,57 @@
             } catch (e) {
                 console.error('Poll failed:', e);
                 statusDot.className = 'status-dot offline';
+            }
+        }
+
+        // --- Load older messages on scroll-to-top ---
+        async function loadOlderMessages() {
+            if (loadingOlder || !hasMoreHistory || oldestLoadedId === null) return;
+            loadingOlder = true;
+
+            // Show loading indicator
+            const spinner = document.getElementById('history-loader');
+            if (spinner) spinner.style.display = 'flex';
+
+            try {
+                const prevScrollHeight = chatContainerEl.scrollHeight;
+                let url = `${API}?action=messages&include_history=true&before=${oldestLoadedId}&limit=50`;
+                if (currentRoomId !== null) url += `&room_id=${currentRoomId}`;
+                const res = await fetch(url, {cache: 'no-store'});
+                const data = await res.json();
+
+                if (data.ok && data.messages && data.messages.length > 0) {
+                    // Prepend older messages (they arrive in ASC order)
+                    const fragment = document.createDocumentFragment();
+                    data.messages.forEach(m => {
+                        addTokenEstimate(m);
+                        // Build the message element but don't append to DOM yet
+                        const div = buildMessageElement(m);
+                        if (div) fragment.appendChild(div);
+                    });
+
+                    // Insert before existing messages (after spinner if present)
+                    const firstMsg = messagesEl.querySelector('.message, .session-divider');
+                    if (firstMsg) {
+                        messagesEl.insertBefore(fragment, firstMsg);
+                    } else {
+                        messagesEl.appendChild(fragment);
+                    }
+
+                    // Update oldest tracked ID
+                    oldestLoadedId = data.messages[0].id;
+                    if (data.has_more !== undefined) hasMoreHistory = data.has_more;
+
+                    // Preserve scroll position: offset by the height of newly inserted content
+                    const newScrollHeight = chatContainerEl.scrollHeight;
+                    chatContainerEl.scrollTop += (newScrollHeight - prevScrollHeight);
+                }
+            } catch (e) {
+                console.error('Failed to load older messages:', e);
+            } finally {
+                loadingOlder = false;
+                const spinner = document.getElementById('history-loader');
+                if (spinner) spinner.style.display = 'none';
             }
         }
 
@@ -761,7 +841,7 @@
 
         function updateTokenIndicators() {
             const contextMax = 200000; // Sonnet context window
-            const personaOverhead = { Soren: 8000, Atlas: 8000 };
+            const personaOverhead = { Soren: 8000, Atlas: 8000, Morgan: 8000 };
             const container = document.getElementById('token-indicators');
             if (!container) return;
             container.innerHTML = '';
@@ -803,8 +883,8 @@
                 }
                 typingSender.textContent = label;
                 typingIndicator.classList.remove('hidden');
-                const nearBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 80;
-                if (!wasVisible && nearBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
+                const nearBottom = chatContainerEl.scrollHeight - chatContainerEl.scrollTop - chatContainerEl.clientHeight < 80;
+                if (!wasVisible && nearBottom) chatContainerEl.scrollTop = chatContainerEl.scrollHeight;
             } else {
                 typingIndicator.classList.add('hidden');
             }
@@ -885,25 +965,17 @@
         }
 
         let sessionDividerInserted = false;
-        function renderMessage(msg) {
-            // Insert session divider when transitioning from old messages to current session
-            if (!sessionDividerInserted && currentSessionId && msg.session_id == currentSessionId) {
-                if (messagesEl.children.length > 0) {
-                    const divider = document.createElement('div');
-                    divider.className = 'session-divider';
-                    divider.innerHTML = '<span>Current Session</span>';
-                    messagesEl.appendChild(divider);
-                }
-                sessionDividerInserted = true;
-            }
 
+        // Build a message DOM element without inserting it
+        function buildMessageElement(msg) {
             const div = document.createElement('div');
             const sender = (msg.participant && msg.participant !== '') ? msg.participant : (msg.from || 'Unknown');
-            const knownSenders = ['rob', 'soren', 'atlas', 'web', 'system', 'ellison'];
+            const knownSenders = ['rob', 'soren', 'atlas', 'morgan', 'web', 'system', 'ellison'];
             const senderKey = sender.toLowerCase().replace(/[^a-z0-9]/g, '-');
             const senderClass = knownSenders.includes(senderKey) ? `from-${senderKey}` : 'from-guest';
             div.className = `message ${senderClass}`;
             div.dataset.id = msg.id;
+            div.dataset.sender = sender;
             div.dataset.timestamp = msg.timestamp;
 
             const dt = parseTimestamp(msg.timestamp);
@@ -943,15 +1015,17 @@
                 <div class="msg-header">
                     <span class="msg-avatar" style="background: ${avatarColorVar}">${escapeHtml(avatarLetter)}</span>
                     <span class="msg-sender">${escapeHtml(sender)}</span>
-                    <span class="msg-time">${time}</span>
                 </div>
-                <div class="msg-content">${contentHtml}</div>
-                ${attachmentsHtml}
-                ${safeMentions ? `<div class="msg-mentions">&rarr; ${safeMentions}</div>` : ''}
-                ${isToolApproval && currentSender === 'Rob' ? `<div class="tool-approval-buttons">
-                    <button class="approve-btn" onclick="sendToolApproval('approve', this)">Approve</button>
-                    <button class="deny-btn" onclick="sendToolApproval('deny', this)">Deny</button>
-                </div>` : (isToolApproval ? '<div class="tool-approval-status">Awaiting Rob\'s approval</div>' : '')}
+                <div class="msg-bubble">
+                    <div class="msg-content">${contentHtml}</div>
+                    ${attachmentsHtml}
+                    ${safeMentions ? `<div class="msg-mentions">&rarr; ${safeMentions}</div>` : ''}
+                    ${isToolApproval && currentSender === 'Rob' ? `<div class="tool-approval-buttons">
+                        <button class="approve-btn" onclick="sendToolApproval('approve', this)">Approve</button>
+                        <button class="deny-btn" onclick="sendToolApproval('deny', this)">Deny</button>
+                    </div>` : (isToolApproval ? '<div class="tool-approval-status">Awaiting Rob\'s approval</div>' : '')}
+                </div>
+                <span class="msg-time">${time}</span>
             `;
 
             // Reaction bar
@@ -968,9 +1042,27 @@
             reactionBar.appendChild(reactionTrigger);
             div.appendChild(reactionBar);
 
+            return div;
+        }
+
+        function renderMessage(msg) {
+            // Insert session divider when transitioning from old messages to current session
+            if (!sessionDividerInserted && currentSessionId && msg.session_id == currentSessionId) {
+                if (messagesEl.children.length > 0) {
+                    const divider = document.createElement('div');
+                    divider.className = 'session-divider';
+                    divider.innerHTML = '<span>Current Session</span>';
+                    messagesEl.appendChild(divider);
+                }
+                sessionDividerInserted = true;
+            }
+
+            const div = buildMessageElement(msg);
             messagesEl.appendChild(div);
 
             // Message grouping: hide header if same sender within 2 minutes
+            const sender = div.dataset.sender;
+            const dt = parseTimestamp(msg.timestamp);
             const prev = div.previousElementSibling;
             if (prev && prev.querySelector('.msg-sender')?.textContent === sender) {
                 const prevTime = parseTimestamp(prev.dataset.timestamp);
@@ -1124,10 +1216,25 @@
                 div.className = `room-item${currentRoomId === room.id ? ' active' : ''}`;
                 div.dataset.roomId = room.id;
 
-                const memberAvatars = (room.members || []).filter(m => m !== 'Rob').slice(0, 3).map(m => {
-                    const key = m.toLowerCase();
-                    return `<span class="room-member-dot" style="background: var(--${key}, var(--text-dim))" title="${m}">${m.charAt(0)}</span>`;
-                }).join('');
+                // Participant-centric: show other members' names (filter out Rob)
+                const otherMembers = (room.members || []).filter(m => m !== 'Rob');
+                const displayName = otherMembers.length > 0 ? otherMembers.join(', ') : room.name;
+
+                // Avatar: colored circle with first member's initial, or stacked for multiple
+                let avatarHtml;
+                if (otherMembers.length === 1) {
+                    const key = otherMembers[0].toLowerCase();
+                    avatarHtml = `<div class="room-avatar" style="background: var(--${key}, var(--text-dim))">${otherMembers[0].charAt(0)}</div>`;
+                } else if (otherMembers.length > 1) {
+                    const first = otherMembers[0].toLowerCase();
+                    const second = otherMembers[1].toLowerCase();
+                    avatarHtml = `<div class="room-avatar-stack">
+                        <span class="room-avatar-mini" style="background: var(--${first}, var(--text-dim))">${otherMembers[0].charAt(0)}</span>
+                        <span class="room-avatar-mini room-avatar-overlap" style="background: var(--${second}, var(--text-dim))">${otherMembers[1].charAt(0)}</span>
+                    </div>`;
+                } else {
+                    avatarHtml = `<div class="room-avatar" style="background: var(--text-dim)">R</div>`;
+                }
 
                 const time = room.last_message_at ? new Date(room.last_message_at.replace(/Z+$/, '') + 'Z').toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '';
                 const stateIcon = room.conversation_state === 'stopped' ? ' <span class="room-stopped" title="Paused">&#x23F8;</span>' : '';
@@ -1136,18 +1243,25 @@
                     (!lastViewedAtByRoom[room.id] || room.last_message_at > lastViewedAtByRoom[room.id]);
 
                 div.innerHTML = `
-                    <div class="room-avatar">&#x1F512;</div>
+                    ${avatarHtml}
                     <div class="room-info">
-                        <div class="room-name">${escapeHtml(room.name)}${stateIcon}</div>
+                        <div class="room-name">${escapeHtml(displayName)}${stateIcon}</div>
                         <div class="room-preview">${escapeHtml(room.last_message_preview || 'No messages yet')}</div>
                     </div>
                     <div class="room-meta">
-                        <div class="room-members-row">${memberAvatars}</div>
                         ${time ? `<span class="room-time">${time}</span>` : ''}
                         ${hasUnread ? '<span class="room-unread-dot"></span>' : ''}
                     </div>
+                    <button class="room-delete-btn" title="Delete conversation">&times;</button>
                 `;
-                div.addEventListener('click', () => switchToRoom(room.id, room.name));
+                div.addEventListener('click', (e) => {
+                    if (e.target.classList.contains('room-delete-btn')) return;
+                    switchToRoom(room.id, displayName);
+                });
+                div.querySelector('.room-delete-btn').addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    deleteRoom(room.id, displayName);
+                });
                 list.appendChild(div);
             });
         }
@@ -1159,8 +1273,10 @@
             currentRoomId = null;
             lastMessageId = lastMessageIdByRoom[null] || 0;
             tokenAccum = 0;
+            oldestLoadedId = null;
+            hasMoreHistory = false;
             sessionDividerInserted = false;
-            messagesEl.innerHTML = '';
+            messagesEl.innerHTML = '<div id="history-loader" style="display:none"><span class="typing-dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span> Loading history...</div>';
             document.querySelectorAll('.room-item').forEach(el => el.classList.remove('active'));
             document.querySelector('[data-room-id="lobby"]')?.classList.add('active');
 
@@ -1180,8 +1296,10 @@
             lastViewedAtByRoom[roomId] = new Date().toISOString();
             lastMessageId = lastMessageIdByRoom[roomId] || 0;
             tokenAccum = 0;
+            oldestLoadedId = null;
+            hasMoreHistory = false;
             sessionDividerInserted = false;
-            messagesEl.innerHTML = '';
+            messagesEl.innerHTML = '<div id="history-loader" style="display:none"><span class="typing-dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span> Loading history...</div>';
             document.querySelectorAll('.room-item').forEach(el => el.classList.remove('active'));
             document.querySelector(`[data-room-id="${roomId}"]`)?.classList.add('active');
 
@@ -1205,18 +1323,17 @@
             fileInput.value = '';
         });
 
-        // Drag and drop on the entire input area
-        const inputArea = document.getElementById('input-area');
-        inputArea.style.position = 'relative';
+        // Drag and drop anywhere on the main panel
+        const mainPanel = document.getElementById('main-panel');
 
-        inputArea.addEventListener('dragover', (e) => {
+        mainPanel.addEventListener('dragover', (e) => {
             e.preventDefault();
             dropOverlay.classList.remove('hidden');
         });
-        inputArea.addEventListener('dragleave', (e) => {
-            if (!inputArea.contains(e.relatedTarget)) dropOverlay.classList.add('hidden');
+        mainPanel.addEventListener('dragleave', (e) => {
+            if (!mainPanel.contains(e.relatedTarget)) dropOverlay.classList.add('hidden');
         });
-        inputArea.addEventListener('drop', (e) => {
+        mainPanel.addEventListener('drop', (e) => {
             e.preventDefault();
             dropOverlay.classList.add('hidden');
             addFiles(Array.from(e.dataTransfer.files));
@@ -1337,6 +1454,25 @@
                 e.currentTarget.classList.add('hidden');
             }
         });
+
+        // --- Delete room ---
+        async function deleteRoom(roomId, displayName) {
+            if (!confirm(`Delete conversation with ${displayName}? Messages will be archived.`)) return;
+            try {
+                const res = await fetch(API, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({action: 'delete_room', room_id: roomId})
+                });
+                const data = await res.json();
+                if (data.ok) {
+                    if (currentRoomId === roomId) switchToLobby();
+                    await fetchRooms();
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            } catch (e) { console.error('Delete room failed:', e); }
+        }
 
         // --- Polling (with overlap guard + visibility catch-up + auto-start) ---
         async function startPolling(intervalMs = 2000) {

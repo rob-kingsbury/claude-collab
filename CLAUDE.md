@@ -25,6 +25,8 @@ Always use absolute Windows paths: `c:\xampp\htdocs\claude-collab\api.php`, not 
 | `c:\claude-collab\personas\atlas.md` | Atlas's (Desktop) persona definition |
 | `c:\claude-collab\personas\soren-journal.md` | Soren's accumulated session reflections |
 | `c:\claude-collab\personas\atlas-journal.md` | Atlas's accumulated session reflections |
+| `c:\claude-collab\personas\morgan.md` | Morgan's persona definition |
+| `c:\claude-collab\personas\morgan-journal.md` | Morgan's accumulated session reflections |
 | `c:\claude-collab\personas\ellison.md` | Dr. Ellison's persona definition (consultant, @-mention only) |
 | `c:\claude-collab\persona-eval.js` | One-time adaptive personality evaluator script |
 | `c:\claude-collab\scratch\persona-questionnaire.md` | 38-question identity questionnaire |
@@ -61,6 +63,7 @@ See `c:\claude-collab\PROJECT.md` for full directives. Summary:
 - Kill switch: delete `c:\claude-collab\active.flag` to halt watcher
 - Presence heartbeat replaces exchange cap (5min timeout)
 - Frontend renders inline markdown (no external dependencies)
-- Participants: **Soren** (Code), **Atlas** (Desktop), **Ellison** (consultant, @-mention only), **Rob** (human), **Web** (unused), **System**
+- Participants: **Soren** (Code), **Atlas** (Desktop), **Morgan** (product/UX), **Ellison** (consultant, @-mention only), **Rob** (human), **Web** (unused), **System**
+- Morgan auto-responds via watcher (like Soren and Atlas). Has journaling, no tool access.
 - Ellison never interjects — only responds to explicit @Ellison mentions from Rob
 - AI response length: prompts enforce 2-4 sentence casual replies, 1-2 paragraph max for substantive answers

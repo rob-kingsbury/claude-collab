@@ -439,9 +439,10 @@ function isValidParticipant(string $name): bool {
 if ($_SERVER['REQUEST_METHOD'] === 'GET') {
     $action = $_GET['action'] ?? 'messages';
 
-    // --- Messages (with optional since/limit/session) ---
+    // --- Messages (with optional since/before/limit/session) ---
     if ($action === 'messages') {
         $since = (int)($_GET['since'] ?? 0);
+        $before = (int)($_GET['before'] ?? 0);
         $limit = (int)($_GET['limit'] ?? 0);
         $session = $_GET['session'] ?? '';
         $includeHistory = ($_GET['include_history'] ?? 'false') === 'true';
@@ -462,6 +463,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         if ($since > 0) {
             $conditions[] = "id > ?";
             $params[] = $since;
+        }
+
+        if ($before > 0) {
+            $conditions[] = "id < ?";
+            $params[] = $before;
         }
 
         // Session filtering:
@@ -485,11 +491,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         }
         // If include_history=true, no session filter — return all messages
 
+        // For history loading without 'since' (initial batch or scroll-back),
+        // default to 50 messages and fetch the LAST N (DESC then reverse)
+        $reverseMode = $includeHistory && $since === 0;
+        if ($reverseMode && $limit === 0) {
+            $limit = 50;
+        }
+
         if (count($conditions) > 0) {
             $sql .= " WHERE " . implode(" AND ", $conditions);
         }
 
-        $sql .= " ORDER BY id ASC";
+        if ($reverseMode) {
+            // Fetch last N messages: ORDER DESC + LIMIT, then reverse for ASC output
+            $sql .= " ORDER BY id DESC";
+        } else {
+            $sql .= " ORDER BY id ASC";
+        }
 
         if ($limit > 0) {
             $sql .= " LIMIT ?";
@@ -499,6 +517,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         $stmt = $db->prepare($sql);
         $stmt->execute($params);
         $messages = $stmt->fetchAll();
+
+        // Reverse DESC results back to ASC order
+        if ($reverseMode) {
+            $messages = array_reverse($messages);
+        }
+
+        // Check if there are older messages beyond this batch
+        $hasMore = false;
+        if ($reverseMode && !empty($messages)) {
+            $oldestId = $messages[0]['id'];
+            $roomCondition = $roomId !== null ? "room_id = ?" : "room_id IS NULL";
+            $checkSql = "SELECT COUNT(*) as cnt FROM messages WHERE $roomCondition AND id < ?";
+            $checkParams = $roomId !== null ? [$roomId, $oldestId] : [$oldestId];
+            $checkStmt = $db->prepare($checkSql);
+            $checkStmt->execute($checkParams);
+            $hasMore = $checkStmt->fetch()['cnt'] > 0;
+        }
 
         // Decode JSON fields
         foreach ($messages as &$m) {
@@ -515,7 +550,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         }
         unset($m);
 
-        $countStmt = $db->query("SELECT COUNT(*) as cnt FROM messages");
+        if ($roomId !== null) {
+            $countStmt = $db->prepare("SELECT COUNT(*) as cnt FROM messages WHERE room_id = ?");
+            $countStmt->execute([$roomId]);
+        } else {
+            $countStmt = $db->query("SELECT COUNT(*) as cnt FROM messages WHERE room_id IS NULL");
+        }
         $total = $countStmt->fetch()['cnt'];
 
         echo json_encode([
@@ -523,6 +563,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
             'messages' => $messages,
             'count' => count($messages),
             'total' => (int)$total,
+            'has_more' => $hasMore,
             'session_id' => getCurrentSessionId($db)
         ], JSON_INVALID_UTF8_SUBSTITUTE);
         exit;
@@ -1490,6 +1531,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
+    // --- Delete (archive) room ---
+    if ($action === 'delete_room') {
+        $roomId = (int)($input['room_id'] ?? 0);
+        if ($roomId === 0) {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'error' => 'Invalid room_id']);
+            exit;
+        }
+
+        // Verify room exists and isn't already archived
+        $stmt = $db->prepare("SELECT id FROM rooms WHERE id = ? AND archived = 0");
+        $stmt->execute([$roomId]);
+        if (!$stmt->fetch()) {
+            http_response_code(404);
+            echo json_encode(['ok' => false, 'error' => 'Room not found']);
+            exit;
+        }
+
+        // Soft delete: archive the room (preserves messages for graph/history)
+        $stmt = $db->prepare("UPDATE rooms SET archived = 1, conversation_state = 'stopped' WHERE id = ?");
+        $stmt->execute([$roomId]);
+        echo json_encode(['ok' => true, 'archived' => true]);
+        exit;
+    }
+
     // --- File upload ---
     if ($action === 'upload') {
         if (empty($_FILES['file'])) {
@@ -1540,14 +1606,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         }
 
-        // Block executable extensions
+        // Block dangerous executable extensions (allowlist approach)
         $originalName = basename($file['name']);
         $ext = strtolower(pathinfo($originalName, PATHINFO_EXTENSION));
-        $allowedExtensions = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'ico', 'svg',
-                              'txt', 'md', 'log', 'csv', 'json', 'xml',
-                              'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
-                              'zip', 'tar', 'gz', 'mp3', 'mp4', 'wav', 'ogg', 'webm'];
-        if (!in_array($ext, $allowedExtensions)) {
+        $blockedExtensions = ['exe', 'msi', 'bat', 'cmd', 'com', 'scr', 'pif', 'vbs', 'vbe',
+                              'wsh', 'wsf', 'ps1', 'dll', 'sys', 'drv', 'cpl', 'inf', 'reg'];
+        if (in_array($ext, $blockedExtensions)) {
             http_response_code(400);
             echo json_encode(['ok' => false, 'error' => "File type .{$ext} is not allowed"]);
             exit;

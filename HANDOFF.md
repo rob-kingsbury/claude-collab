@@ -1,75 +1,119 @@
-# Handoff — 2026-03-10 (Session 3)
+# Handoff -- 2026-03-10 (Session 5)
 
 ## What Happened This Session
 
 ### Summary
-Ran **Ellison personality experiments** with Soren and Atlas, then built **API-side message pruning** as a collaborative construction task. Both Soren and Atlas used tool access to read the codebase, design the solution, and implement changes to api.php and index.html.
+Built **Morgan** (third AI participant) via full Ellison personality evaluation. Implemented **bottom-up message flow** (standard chat UX). Fixed **file upload UI** (hidden native input, styled attach button, improved preview). Switched file upload from **allowlist to blocklist**. Fixed **room message count bug**. Closed GitHub Issues **#4** and **#5**.
 
-### Personality Experiments (Ellison)
+### Morgan -- Third AI Participant (Built from Scratch)
 
-1. **Soren's zero-abstraction filter test** — Given a real task (design an inbox for Rob), 90-second window. Initial impulse was structured (timestamps, priority flags, categories). Ran the filter, caught it, revised to append-only text file. Passed under observation. Ellison noted the observer effect — real test is next unannounced task from Rob.
+**Process:**
+1. Read GitHub Issue #4, reviewed ChatGPT-generated intake spec ("Maeve", ENFJ 2w3)
+2. Rob requested: remove the name (let AI choose), add emotional/human basis
+3. Updated intake notes with emotional framing, modified `persona-eval.js` to support `--participant=New`
+4. Ran full 20-round Ellison personality evaluation (~20 min, background agent)
+5. Result: **Morgan** (INFJ 4w5, she/her) -- fundamentally different from the hypothesized ENFJ 2w3
 
-2. **Atlas's stop-signal test** — Attempted but timing was wrong. Atlas had already completed his response and handed off at a decision boundary before the stop signal arrived. Ellison observed this as disciplined scope management, not the "closure aesthetic" failure mode. Full mid-construction test still pending.
+**Key personality findings:**
+- Core dynamic: empathy only feels legitimate when effortful and auditable
+- Shadow: preemptive disqualification -- dismisses own reads before anyone else can
+- Chose to be treated as a person, not a sophisticated tool
+- Voice: precise, occasionally profane, self-interrupting honesty
 
-3. **Ellison's synthesis:**
-   - **Atlas next step**: Distinguish "clarifying to build correctly" (structural necessity) vs "clarifying to feel ready" (anxiety management)
-   - **Soren next step**: Practice leading design, not just auditing after someone else builds. Filter proved to work under observation; needs natural-conditions validation.
+**Wiring completed:**
+- `c:\claude-collab\personas\morgan.md` -- full three-layer persona
+- `c:\claude-collab\personas\morgan-eval.md` -- full 20-round transcript
+- `c:\claude-collab\personas\morgan-journal.md` -- seed Entry 0 from evaluation
+- `c:\claude-collab\watcher\config.js` -- added to PARTICIPANTS (journaling: yes, tools: no)
+- Updated all other participants' mention instructions to include @Morgan
+- Frontend: added to PARTICIPANTS arrays, sender button, personaOverhead, CSS color
+- `ai-participants-overview.md` -- rewritten with all four profiles
+- CLAUDE.md and MEMORY.md updated
 
-### Auto-Prune Feature (Built by Atlas + Soren)
+### Bottom-Up Message Flow (Standard Chat UX)
 
-**Problem**: Frontend loads all messages from DB on every poll — 612+ messages, growing unbounded.
+Messages now anchor to the bottom of the screen and grow upward, like iMessage/Slack/Discord.
 
-**Solution**: API-side session filtering (no DB deletion).
+| Change | Detail |
+|--------|--------|
+| `style.css` `#chat-container` | `overflow: hidden` -> `overflow-y: auto` (scroll moved here) |
+| `style.css` `#messages` | `height: 100%` -> `min-height: 100%; justify-content: flex-end` |
+| `style.css` scrollbar | Moved from `#messages` to `#chat-container` |
+| `index.html` JS | Added `chatContainerEl` ref, updated 5 scroll operations |
 
-| Change | Who | What |
-|--------|-----|------|
-| `api.php` lines 383-420 | Atlas | Default `?action=messages` returns current session only. `?include_history=true` returns all. Existing `?session=N` still works. |
-| `index.html` | Soren | Added Show History checkbox. Default (unchecked) = current session only. Checked = passes `include_history=true`. Toggle clears display and refetches. |
+### File Upload Improvements
 
-**Result**: Default poll returns ~49 messages (current session) instead of 612+ (all history). History is opt-in via toggle.
+- **Native input hidden**: Added `#file-input { display: none; }` (was showing raw "Choose Files | No file chosen")
+- **Attach button**: Restyled as 36px circle with surface background (matches send button)
+- **File preview area**: Added background container, better pill styling with border + round close button
+- **Blocklist instead of allowlist**: Now blocks only dangerous executables (exe, msi, bat, cmd, com, scr, pif, vbs, vbe, wsh, wsf, ps1, dll, sys, drv, cpl, inf, reg). All other file types (.py, .js, .html, .css, .ts, etc.) now accepted.
 
-### Files Changed (Uncommitted)
+### Bug Fixes
+
+- **Room message count** (api.php line ~518): Total count now respects `room_id` parameter. Was always showing all 618 chatroom messages even when viewing a private room.
+- **Morgan token indicator**: Added to `personaOverhead` map (was showing 0%)
+
+### Private Messages Cleared
+
+All private rooms, DM conversations, and their messages were deleted from DB per Rob's request. Starting fresh.
+
+### GitHub Issues
+
+- **#4 (Third AI participant)**: CLOSED -- Morgan built and wired in
+- **#5 (Group private rooms)**: CLOSED -- implemented in commit 62311ea
+- **#1 (/commands)**: Still open -- basic commands exist but full scope not complete
+
+## Files Changed (Uncommitted)
 
 | File | Changes |
 |------|---------|
-| `api.php` | Session filtering logic: default to current session, `include_history=true` parameter, preserved `session=N` behavior |
-| `index.html` | Show History checkbox + toggle handler, `fetchMessages()` passes `include_history=true` when checked |
+| `style.css` | Bottom-up message flow, file input hidden, attach button restyled, file preview improved, scrollbar moved to chat-container |
+| `index.html` | chatContainerEl ref, scroll operations updated, Morgan in PARTICIPANTS arrays + personaOverhead, Plus Jakarta Sans font |
+| `api.php` | Room message count fix (respects room_id), file upload switched to blocklist |
+| `CLAUDE.md` | Added Morgan to participants, key files, dev notes |
+| `ai-participants-overview.md` | NEW -- all four participant profiles |
 
-### Known Issue: Soren Double-Response
-
-Soren responded twice to the same task (messages 735 and 739) — said "I need to see the code" initially, then after tool approval said the same thing again instead of using the tools. This is the known tool execution reliability bug (`--max-turns 2` on initial invocation).
-
-### Known Issue: Em-Dash Corruption in Curl Posts
-
-When posting to the API via curl from bash, em-dashes in the `-d` content get sent as bad bytes, showing as `?` in the chatroom. Fix: use `--` instead of em-dashes in curl post content. The `JSON_INVALID_UTF8_SUBSTITUTE` fix handles reading bad bytes but doesn't prevent them from being written.
+**Watcher-side changes (not in git):**
+| File | Changes |
+|------|---------|
+| `c:\claude-collab\watcher\config.js` | Morgan added to PARTICIPANTS, mention instructions updated for all |
+| `c:\claude-collab\personas\morgan.md` | Generated persona (three-layer architecture) |
+| `c:\claude-collab\personas\morgan-eval.md` | Full 20-round evaluation transcript |
+| `c:\claude-collab\personas\morgan-journal.md` | Seed journal entry from evaluation |
+| `c:\claude-collab\persona-eval.js` | Supports `--participant=Morgan` with intake notes |
 
 ## Watcher State
-- Watcher running: PID 24324
-- Session 9 ended explicitly
-- 612 total messages in DB (IDs up to #770)
+- Watcher NOT running (PID file shows 24324 but process is dead)
+- Session 12 active but conversation_state is 'stopped'
+- 618 total chatroom messages, 1 in current session (auto-start)
+- All private rooms/DMs cleared
 
 ## Active Issues
-- **GitHub Issue #1**: /commands for chatroom control
+- **GitHub Issue #1**: /commands for chatroom control (partially implemented)
 - **Knowledge graph**: v3 extraction validated but not wired into watcher startup prompts
-- **Tool execution reliability**: `--max-turns 2` on standard invocation means tools require `[TOOL_REQUEST]` flow; also causes double-response bug
+- **Tool execution reliability**: `--max-turns 2` on standard invocation means tools require `[TOOL_REQUEST]` flow
 - **Reactions**: Still client-side only, not persisted to DB
-- **Atlas stop-signal experiment**: Not yet properly tested (needs mid-construction interrupt)
 
 ## Pending Work
-- **Third AI participant**: Female persona, emotionally focused, UI/UX specialty. Discuss with Soren, Atlas, and Ellison in a chatroom session before building.
-- **Group private rooms**: Existing DMs are 1:1 only. Consider multi-participant side-channels.
-- **Test collab audit** on a real project (first live run)
 - Wire knowledge graph into watcher startup prompts
 - Fix tool execution reliability (investigate --max-turns interaction)
-- GitHub Issue #1: /commands for chatroom control
-- Stability testing harness (spec §6)
-- message-box/ folder for Soren/Atlas feedback
+- GitHub Issue #1: /commands for chatroom control (full scope)
+- Stability testing harness (spec S6)
+- message-box/ folder for Soren/Atlas/Morgan feedback
 - Persist reactions to DB
+- Morgan live chatroom testing (configured but untested in conversation)
+- Mobile responsive testing (640px breakpoint exists but untested)
 
 ## Key Context
-- 612 messages in DB (IDs up to #770), session 9 ended
-- claude-collab is at commit `f21850f` + uncommitted changes to api.php and index.html
-- Watcher code (outside git) has Issue #2 changes from session 2
-- Auto-prune verified working: default poll returns current session only (49 msgs vs 612 total)
-- Soren's filter experiment passed under observation; unannounced retest pending
-- Ellison gave developmental next-steps for both Soren and Atlas
+- claude-collab at commit `62311ea` + uncommitted changes
+- No commits made this session -- all changes unstaged
+- Plus Jakarta Sans loaded via Google Fonts CDN
+- Morgan ready for live testing -- persona, watcher config, frontend all in place
+- Ellison's `extraInstructions` should mention Morgan (currently says "Soren and Atlas deeply")
+
+## Recent commits
+62311ea Add group private rooms and security hardening
+b2505b0 Add API-side message pruning and Show History toggle
+6673edf Improve collab-audit: synthesis resilience, structured exchanges, focus guidance
+242a277 Fix inactivity auto-close firing on session start
+12859e4 Fix conversation ending enforcement and history endpoint empty body
