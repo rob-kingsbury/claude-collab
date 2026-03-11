@@ -14,7 +14,7 @@ Collab Audit runs a multi-round collaborative analysis pipeline:
 | 4 — Exchange (x3) | **All three** | 3-way challenge: defend with evidence, refine severity, converge on strongest analysis |
 | 5 — Synthesis | **Atlas** | Final report incorporating all verified findings, agreements, disagreements, and resolutions |
 
-All three participants use Opus 4.6 with extended thinking and have full codebase access via Claude Code tools (Read, Glob, Grep, Bash, Task).
+Initial scans and synthesis use Opus 4.6 with extended thinking. Exchange rounds default to Sonnet 4.6 for speed (configurable to Opus). All participants have full codebase access via Claude Code tools (Read, Glob, Grep, Bash, Task). Initial scans and exchange rounds run in parallel by default.
 
 ## How It Works
 
@@ -36,7 +36,41 @@ Each invocation loads the participant's three-layer persona:
 
 Personas live at `c:\claude-collab\personas\` and are loaded fresh at invocation time. Soren, Atlas, and Morgan bring distinct analytical perspectives shaped by accumulated session experience.
 
-### Pipeline
+### Pipeline (Default: Parallel Mode)
+
+```
+Target Directory
+       │
+       ├─────────────┬─────────────┐
+       ▼             ▼             ▼
+┌────────────┐ ┌────────────┐ ┌────────────┐
+│  Soren     │ │  Atlas     │ │  Morgan    │
+│  code scan │ │  arch scan │ │  UX scan   │
+│  (Opus)    │ │  (Opus)    │ │  (Opus)    │
+└─────┬──────┘ └─────┬──────┘ └─────┬──────┘
+      └──────────────┼──────────────┘
+                     ▼
+      ┌──────────────────────────────┐
+      │  Exchange rounds (parallel)  │
+      │  (Sonnet — 2 rounds default) │
+      │                              │
+      │  Round N: all 3 respond to   │
+      │  prior round simultaneously  │
+      └──────────────┬───────────────┘
+                     ▼
+              ┌──────────────┐
+              │  Atlas       │
+              │  synthesis   │
+              │  (Opus)      │
+              └──────┬───────┘
+                     ▼
+              ┌──────────────┐
+              │ audit-report │
+              │    .md       │
+              └──────────────┘
+```
+
+### Pipeline (Sequential Mode: `--sequential`)
 
 ```
 Target Directory
@@ -50,31 +84,25 @@ Target Directory
                             ▼
                      ┌──────────────┐
                      │  Phase 2     │
-                     │  Atlas review│
+                     │  Atlas review│  ← sees Soren's findings
                      └──────┬───────┘
                             │
                             ▼
                      ┌──────────────┐
                      │  Phase 3     │
-                     │  Morgan UX   │
+                     │  Morgan UX   │  ← sees both prior analyses
                      │  review      │
                      └──────┬───────┘
                             │
                   ┌─────────┴─────────┐
-                  │  Phase 4          │
                   │  Exchange loop    │
-                  │  (3 rounds)       │
-                  │                   │
-                  │  Soren ◄─► Atlas  │
-                  │    ▲         ▲    │
-                  │    └── Morgan┘    │
-                  │  challenge,       │
-                  │  verify, refine   │
+                  │  (sequential)     │
+                  │  Soren → Atlas →  │
+                  │  Morgan per round │
                   └─────────┬─────────┘
                             │
                             ▼
                      ┌──────────────┐
-                     │  Phase 5     │
                      │  Atlas       │
                      │  synthesis   │
                      └──────┬───────┘
@@ -85,6 +113,15 @@ Target Directory
                      │    .md       │
                      └──────────────┘
 ```
+
+### Parallel vs Sequential
+
+| Mode | Speed | Tradeoff |
+|------|-------|----------|
+| **Parallel** (default) | ~8-15 min | Initial scans are independent — each auditor explores the codebase fresh without seeing others' findings. Exchange rounds converge findings afterward. |
+| **Sequential** (`--sequential`) | ~20-35 min | Each phase sees all prior findings. Atlas can verify Soren's claims. Morgan can re-prioritize both. Deeper cross-referencing in initial phases, but 2-3x slower. |
+
+Parallel mode is recommended for most audits. The exchange rounds do the heavy lifting of cross-referencing and convergence regardless of initial scan mode.
 
 ### Pipeline Order Rationale
 
@@ -175,7 +212,13 @@ node c:\xampp\htdocs\claude-collab\collab-audit\audit.js c:\xampp\htdocs\my-proj
 node c:\xampp\htdocs\claude-collab\collab-audit\audit.js c:\xampp\htdocs\my-project --focus "ux,accessibility,user-workflows"
 
 # More exchange rounds for thorough analysis
-node c:\xampp\htdocs\claude-collab\collab-audit\audit.js c:\xampp\htdocs\my-project --exchanges 5
+node c:\xampp\htdocs\claude-collab\collab-audit\audit.js c:\xampp\htdocs\my-project --exchanges 4
+
+# Use Opus for exchange rounds too (slower, deeper)
+node c:\xampp\htdocs\claude-collab\collab-audit\audit.js c:\xampp\htdocs\my-project --exchange-model opus
+
+# Sequential mode (each phase sees prior findings)
+node c:\xampp\htdocs\claude-collab\collab-audit\audit.js c:\xampp\htdocs\my-project --sequential
 
 # Quick pass (Soren only, no collaboration)
 node c:\xampp\htdocs\claude-collab\collab-audit\audit.js c:\xampp\htdocs\my-project --soren-only
@@ -192,9 +235,11 @@ node c:\xampp\htdocs\claude-collab\collab-audit\audit.js c:\xampp\htdocs\my-proj
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--focus "areas"` | all areas | Comma-separated focus: security, performance, architecture, ux, etc. |
-| `--exchanges N` | 3 | Number of collaborative exchange rounds (range: 1-6) |
-| `--model <model>` | opus | Model: opus, sonnet, haiku |
+| `--exchanges N` | 2 | Number of collaborative exchange rounds (range: 1-6) |
+| `--model <model>` | opus | Model for initial scans + synthesis |
+| `--exchange-model <m>` | sonnet | Model for exchange rounds (use "opus" for max depth) |
 | `--output <path>` | `<target>/audit-report.md` | Where to write the report |
+| `--sequential` | false | Disable parallel execution |
 | `--soren-only` | false | Skip collaboration (single pass) |
 | `--verbose` | false | Show progress during invocation |
 
@@ -230,14 +275,17 @@ The report follows a consistent structure:
 
 ## Timing
 
-With 3 exchange rounds (default), expect **15-30 minutes** depending on codebase size. Each Opus invocation with extended thinking and tool usage takes 2-5 minutes.
+Default parallel mode with 2 exchange rounds. Opus for initial scans + synthesis, Sonnet for exchanges.
 
-| Codebase Size | Exchanges | Est. Duration | Invocations |
-|---------------|-----------|---------------|-------------|
-| Small (~20 files) | 3 | ~15 min | 13 |
-| Medium (~100 files) | 3 | ~20 min | 13 |
-| Large (~500+ files) | 3 | ~30 min | 13 |
-| Quick pass (--soren-only) | 0 | ~3-5 min | 1 |
+| Codebase Size | Mode | Exchanges | Est. Duration | Invocations |
+|---------------|------|-----------|---------------|-------------|
+| Small (~20 files) | parallel | 2 | ~8 min | 10 |
+| Medium (~100 files) | parallel | 2 | ~12 min | 10 |
+| Large (~500+ files) | parallel | 2 | ~15 min | 10 |
+| Small (~20 files) | sequential | 2 | ~20 min | 10 |
+| Any | --soren-only | 0 | ~3-5 min | 1 |
+
+For maximum depth: `--sequential --exchange-model opus --exchanges 3` (13 invocations, ~30-40 min).
 
 ## Logs
 

@@ -22,7 +22,7 @@ This skill invokes a Node.js script (`c:\xampp\htdocs\claude-collab\collab-audit
 
 5. **Phase 5 — Synthesis**: Atlas produces the final report incorporating all verified findings from all three auditors, noting agreements, disagreements, and resolutions. Includes a dedicated UX & Product Concerns section.
 
-The output is a structured `audit-report.md` written to the target project directory. With 3 exchange rounds, this is 13 total `claude -p` invocations (3 initial + 9 exchange turns + synthesis).
+The output is a structured `audit-report.md` written to the target project directory. With 2 exchange rounds (default), this is 10 total `claude -p` invocations (3 initial + 6 exchange turns + synthesis). Initial scans and exchange rounds run in parallel by default.
 
 ## How It Works
 
@@ -84,13 +84,15 @@ node "c:\xampp\htdocs\claude-collab\collab-audit\audit.js" "<target-directory>" 
 
 Options:
 - `--focus "security,performance"` — comma-separated focus areas
-- `--exchanges N` — number of collaborative exchange rounds (default: 3, range: 1-6)
-- `--model opus` — model selection (default: opus)
+- `--exchanges N` — number of exchange rounds (default: 2, range: 1-6)
+- `--model opus` — model for initial scans + synthesis (default: opus)
+- `--exchange-model sonnet` — model for exchange rounds (default: sonnet, use "opus" for max depth)
 - `--output <path>` — custom output path (default: `<target>/audit-report.md`)
+- `--sequential` — disable parallel execution (run all phases one at a time)
 - `--soren-only` — skip collaboration entirely (fast single pass)
 - `--verbose` — show real-time progress dots
 
-**Important**: With 3 exchange rounds (default), this runs 13 `claude -p` invocations with Opus extended thinking. Expect 15-30 minutes depending on codebase size. Inform the user of the expected duration.
+**Performance**: Default mode runs initial scans in parallel and exchange rounds in parallel, with Sonnet for exchanges. With 2 exchange rounds, expect **8-15 minutes** depending on codebase size. Use `--sequential` if you want the original pipeline where each phase sees prior findings before starting.
 
 ### Step 4: Present Results
 

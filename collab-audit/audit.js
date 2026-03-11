@@ -10,12 +10,12 @@
  *   node c:\xampp\htdocs\claude-collab\collab-audit\audit.js c:\xampp\htdocs\bandpilot --focus "security,performance"
  *   node c:\xampp\htdocs\claude-collab\collab-audit\audit.js . --output c:\audits\report.md
  *
- * Pipeline:
- *   1. Soren performs initial code-level audit with tool access
- *   2. Atlas reviews Soren's findings, pushes back, adds structural observations
- *   3. Collaborative exchange loop (configurable rounds) — they challenge,
- *      refine, and converge on findings
- *   4. Atlas produces final synthesized report incorporating all exchanges
+ * Pipeline (default parallel mode):
+ *   1-3. Soren (code), Atlas (architecture), Morgan (UX) scan codebase in parallel (Opus)
+ *   4.   Exchange rounds — all three challenge/refine in parallel (Sonnet)
+ *   5.   Atlas synthesizes final report (Opus)
+ *
+ * Use --sequential for the original pipeline where each phase sees prior findings.
  */
 
 const { spawn } = require('child_process');
@@ -27,9 +27,10 @@ const path = require('path');
 const CLAUDE_CLI_JS = 'C:\\Users\\roban\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\cli.js';
 const PERSONAS_DIR = 'C:\\claude-collab\\personas';
 const DEFAULT_MODEL = 'opus';
+const DEFAULT_EXCHANGE_MODEL = 'sonnet'; // Exchange rounds use faster model by default
 const MAX_TURNS = 25;
 const TIMEOUT_MS = 600000; // 10 minutes per invocation
-const DEFAULT_EXCHANGES = 3; // Number of collaborative back-and-forth rounds
+const DEFAULT_EXCHANGES = 2; // Number of collaborative back-and-forth rounds
 const CONTEXT_WINDOW_TOKENS = 200000;
 const PERSONA_BUDGET_RATIO = 0.15; // Slightly lower than chatroom — leave room for codebase
 const PERSONA_BUDGET_TOKENS = Math.floor(CONTEXT_WINDOW_TOKENS * PERSONA_BUDGET_RATIO);
@@ -46,17 +47,20 @@ Usage:
   node audit.js <target-directory> [options]
 
 Options:
-  --focus "areas"     Comma-separated focus areas (e.g., "security,performance,architecture")
-  --exchanges N       Number of collaborative exchange rounds (default: 3, range: 1-6)
-  --model <model>     Model to use (default: opus). Options: opus, sonnet, haiku
-  --output <path>     Output file path (default: <target>/audit-report.md)
-  --soren-only        Run only Soren's pass (skip collaboration)
-  --verbose           Show real-time progress
-  --help, -h          Show this help
+  --focus "areas"        Comma-separated focus areas (e.g., "security,performance,ux")
+  --exchanges N          Number of exchange rounds (default: ${DEFAULT_EXCHANGES}, range: 1-6)
+  --model <model>        Model for initial scans + synthesis (default: opus)
+  --exchange-model <m>   Model for exchange rounds (default: sonnet). Use "opus" for max depth
+  --output <path>        Output file path (default: <target>/audit-report.md)
+  --sequential           Disable parallel execution (run all phases sequentially)
+  --soren-only           Run only Soren's pass (skip collaboration)
+  --verbose              Show real-time progress
+  --help, -h             Show this help
 
 Examples:
   node audit.js c:\\xampp\\htdocs\\ai-ta
   node audit.js c:\\xampp\\htdocs\\bandpilot --focus "security,sql-injection,xss"
+  node audit.js . --exchange-model opus --exchanges 3
   node audit.js . --output c:\\audits\\myproject-audit.md
 `);
         process.exit(0);
@@ -65,18 +69,22 @@ Examples:
     let targetDir = path.resolve(args[0]);
     let focus = '';
     let model = DEFAULT_MODEL;
+    let exchangeModel = DEFAULT_EXCHANGE_MODEL;
     let output = '';
     let exchanges = DEFAULT_EXCHANGES;
     let sorenOnly = false;
     let verbose = false;
+    let sequential = false;
 
     for (let i = 1; i < args.length; i++) {
         switch (args[i]) {
             case '--focus': focus = args[++i] || ''; break;
             case '--exchanges': exchanges = Math.min(6, Math.max(1, parseInt(args[++i]) || DEFAULT_EXCHANGES)); break;
             case '--model': model = args[++i] || DEFAULT_MODEL; break;
+            case '--exchange-model': exchangeModel = args[++i] || DEFAULT_EXCHANGE_MODEL; break;
             case '--output': output = args[++i] || ''; break;
             case '--soren-only': sorenOnly = true; break;
+            case '--sequential': sequential = true; break;
             case '--verbose': verbose = true; break;
         }
     }
@@ -85,7 +93,7 @@ Examples:
         output = path.join(targetDir, 'audit-report.md');
     }
 
-    return { targetDir, focus, model, output, exchanges, sorenOnly, verbose };
+    return { targetDir, focus, model, exchangeModel, output, exchanges, sorenOnly, verbose, sequential };
 }
 
 // --- Persona loader (extracted from watcher/persona.js) ---
@@ -170,7 +178,7 @@ function buildSorenInitialPrompt(persona, targetDir, focus) {
 
     return `${personaHeader(persona)}You are Soren, performing Phase 1 of a collaborative codebase audit with Atlas. You have full tool access — use Read, Glob, Grep, and Bash to explore the codebase thoroughly.
 
-After your initial analysis, Atlas will review your findings and push back. You'll then have ${DEFAULT_EXCHANGES} rounds of collaborative exchange to challenge each other's findings, refine assessments, and converge on the best analysis. So be thorough but know that Atlas will verify and challenge you.
+After your initial analysis, Atlas and Morgan will review your findings and push back. You'll then have multiple rounds of collaborative exchange to challenge each other's findings, refine assessments, and converge on the best analysis. So be thorough but know that Atlas and Morgan will verify and challenge you.
 
 TARGET DIRECTORY: ${targetDir}
 ${focusSection}
@@ -271,6 +279,89 @@ Don't duplicate what Soren and Atlas already found — reference their findings 
 ${personaBookend(persona)}`;
 }
 
+// Independent prompts for parallel initial scans (no prior findings to reference)
+
+function buildAtlasIndependentPrompt(persona, targetDir, focus) {
+    const focusSection = focus
+        ? `\nFOCUS AREAS (prioritize these): ${focus}\n`
+        : '';
+
+    return `${personaHeader(persona)}You are Atlas, performing an independent initial analysis as part of a collaborative codebase audit with Soren and Morgan. You have full tool access — use Read, Glob, Grep, and Bash to explore the codebase thoroughly.
+
+Soren and Morgan are performing their own independent analyses in parallel. After all three are done, you'll have multiple rounds of collaborative exchange to challenge each other's findings, cross-reference, and converge. So focus on YOUR strengths — structural analysis, architectural patterns, and systemic concerns.
+
+TARGET DIRECTORY: ${targetDir}
+${focusSection}
+YOUR TASK:
+Perform a thorough structural and architectural audit of the codebase. You have tool access — actually read the files, don't guess. Start with the directory structure and high-level organization, then dig into patterns and dependencies.
+
+Look for:
+1. **Architectural Concerns** — tight coupling, circular dependencies, misplaced responsibilities, god objects/modules
+2. **Pattern Consistency** — inconsistent approaches to similar problems, naming conventions that diverge, mixed paradigms
+3. **Dependency Structure** — fragile dependency chains, missing abstractions, over-abstraction, inappropriate coupling between layers
+4. **Configuration & Deployment** — hardcoded values, missing environment handling, deployment pitfalls
+5. **Test Coverage & Quality** — gaps in testing, untestable designs, brittle test patterns (if tests exist)
+6. **Security Architecture** — authentication/authorization design, trust boundaries, data flow concerns
+7. **Scalability Concerns** — blocking operations, resource leaks, patterns that won't scale
+
+For each finding:
+- State the file path and line number(s)
+- Describe the issue concisely
+- Rate severity: CRITICAL / HIGH / MEDIUM / LOW
+- Suggest a fix (brief)
+
+Output your findings as a structured list grouped by category. Be precise and evidence-based — cite actual code you read. Do not fabricate issues. If the codebase is clean in an area, say so.
+
+End with a brief summary: total findings by severity, overall structural assessment.
+${personaBookend(persona)}`;
+}
+
+function buildMorganIndependentPrompt(persona, targetDir, focus) {
+    const focusSection = focus
+        ? `\nFOCUS AREAS (prioritize these): ${focus}\n`
+        : '';
+
+    return `${personaHeader(persona)}You are Morgan, performing an independent initial analysis as part of a collaborative codebase audit with Soren and Atlas. You have full tool access — use Read, Glob, Grep, and Bash to explore the codebase thoroughly.
+
+Soren and Atlas are performing their own independent analyses in parallel. After all three are done, you'll have multiple rounds of collaborative exchange to challenge each other's findings, cross-reference, and converge. So focus on YOUR strengths — UX/product impact, user-facing quality, and developer experience.
+
+TARGET DIRECTORY: ${targetDir}
+${focusSection}
+YOUR TASK:
+Perform a thorough UX/product-focused audit of the codebase. You have tool access — actually read the files, don't guess. Look at the codebase from the perspective of *the humans who use and maintain this software*.
+
+Look for:
+1. **UX Vulnerabilities** — Issues the code creates for humans using the software:
+   - Confusing error messages or silent failures that leave users stranded
+   - Missing loading states, feedback, or confirmation flows
+   - Accessibility gaps (missing ARIA, keyboard nav, screen reader issues)
+   - Inconsistent behavior that breaks user mental models
+   - Race conditions or timing issues that surface as UI glitches
+2. **Product Logic Gaps** — Business logic that doesn't match what a user would expect:
+   - Edge cases in user workflows (empty states, first-run experience, error recovery)
+   - Data validation that's too strict or too loose from a user perspective
+   - Missing affordances or unclear interaction patterns
+3. **User-Facing Security** — Security issues that directly impact user trust:
+   - Error messages that leak internal details
+   - Confusing authentication/authorization flows
+   - Missing confirmation for destructive actions
+4. **Developer Experience** — How the code treats the next human who touches it:
+   - Misleading naming that will cause bugs when someone new maintains this
+   - Implicit assumptions that aren't documented at system boundaries
+   - Configuration or setup that will confuse new contributors
+
+For each finding:
+- State the file path and line number(s)
+- Describe the user/product impact concisely
+- Rate severity: CRITICAL / HIGH / MEDIUM / LOW (from a product perspective)
+- Suggest a fix (brief)
+
+Output your findings as a structured list grouped by category. Be precise and evidence-based — cite actual code you read. Focus on what Soren and Atlas are likely to miss (they'll handle code bugs and architecture).
+
+End with a brief summary: total findings by severity, overall UX/product assessment.
+${personaBookend(persona)}`;
+}
+
 function buildExchangePrompt(persona, name, otherNames, targetDir, conversationHistory, roundNum, totalRounds, focus) {
     const focusSection = focus
         ? `\nFOCUS AREAS: ${focus}\n`
@@ -342,7 +433,7 @@ Write the report in this exact structure:
 **Target**: ${targetDir}
 **Date**: ${new Date().toISOString().split('T')[0]}
 **Auditors**: Soren (code analysis) + Atlas (structural review & synthesis) + Morgan (UX/product)
-**Method**: ${DEFAULT_EXCHANGES}-round collaborative exchange with mutual verification
+**Method**: Multi-round collaborative exchange with mutual verification
 
 ## Executive Summary
 [2-3 sentences: overall health, critical issues count, top recommendation]
@@ -369,7 +460,7 @@ Write the report in this exact structure:
 [Ordered list of what to fix first and why, estimated effort for each]
 
 ---
-*Generated by Collab Audit (Soren + Atlas + Morgan) — ${DEFAULT_EXCHANGES}-round collaborative exchange using Claude Opus 4.6 with extended thinking*
+*Generated by Collab Audit (Soren + Atlas + Morgan) — collaborative exchange with extended thinking*
 ${personaBookend(persona)}`;
 }
 
@@ -424,7 +515,7 @@ Produce the definitive audit report from the consolidated findings above. Give p
 [Ordered list of what to fix first and why, estimated effort for each]
 
 ---
-*Generated by Collab Audit (Soren + Atlas + Morgan) — collaborative exchange using Claude Opus 4.6 with extended thinking*
+*Generated by Collab Audit (Soren + Atlas + Morgan) — collaborative exchange with extended thinking*
 ${personaBookend(persona)}`;
 }
 
@@ -522,7 +613,7 @@ function invokeClaude(prompt, targetDir, model, verbose) {
 // --- Main ---
 
 async function main() {
-    const { targetDir, focus, model, output, exchanges, sorenOnly, verbose } = parseArgs();
+    const { targetDir, focus, model, exchangeModel, output, exchanges, sorenOnly, verbose, sequential } = parseArgs();
 
     // Validate target
     if (!fs.existsSync(targetDir)) {
@@ -530,102 +621,162 @@ async function main() {
         process.exit(1);
     }
 
-    const totalInvocations = sorenOnly ? 1 : 3 + (exchanges * 3) + 1; // 3 initial + 3-way exchanges + synthesis
-    console.log(`\n=== Collab Audit ===`);
-    console.log(`Target:     ${targetDir}`);
-    console.log(`Model:      ${model}`);
-    console.log(`Focus:      ${focus || '(all areas)'}`);
-    console.log(`Auditors:   Soren (code) + Atlas (architecture) + Morgan (UX/product)`);
-    console.log(`Exchanges:  ${sorenOnly ? 'none (Soren only)' : exchanges + ' rounds (3-way)'}`);
-    console.log(`Phases:     ${totalInvocations} claude -p invocations`);
-    console.log(`Output:     ${output}`);
-    console.log();
+    const parallelMode = !sequential;
 
-    // Load personas
+    // Load all personas upfront
     const sorenPersona = loadPersona('soren');
     if (!sorenPersona) {
         console.error('Error: Could not load Soren persona from ' + PERSONAS_DIR);
         process.exit(1);
     }
 
-    // === Phase 1: Soren's initial code-level audit ===
-    console.log('Phase 1: Soren — initial code-level analysis...');
-    const sorenPrompt = buildSorenInitialPrompt(sorenPersona, targetDir, focus);
-    if (verbose) console.log(`  Prompt: ${sorenPrompt.length} chars (${estimateTokens(sorenPrompt)} est. tokens)`);
+    const atlasPersona = loadPersona('atlas');
+    const morganPersona = loadPersona('morgan');
 
-    let sorenFindings;
-    try {
-        sorenFindings = await invokeClaude(sorenPrompt, targetDir, model, verbose);
-        console.log(`  Soren complete (${sorenFindings.length} chars)`);
-    } catch (e) {
-        console.error(`  Soren failed: ${e.message}`);
-        process.exit(1);
-    }
+    const participantCount = morganPersona ? 3 : 2;
+    const totalInvocations = sorenOnly ? 1 : participantCount + (exchanges * participantCount) + 1;
 
+    console.log(`\n=== Collab Audit ===`);
+    console.log(`Target:     ${targetDir}`);
+    console.log(`Model:      ${model} (initial + synthesis), ${exchangeModel} (exchanges)`);
+    console.log(`Focus:      ${focus || '(all areas)'}`);
+    console.log(`Auditors:   ${morganPersona ? 'Soren (code) + Atlas (architecture) + Morgan (UX/product)' : 'Soren (code) + Atlas (architecture)'}`);
+    console.log(`Exchanges:  ${sorenOnly ? 'none (Soren only)' : exchanges + ` rounds (${participantCount}-way)`}`);
+    console.log(`Parallel:   ${parallelMode ? 'yes (initial scans + exchange rounds)' : 'no (sequential)'}`);
+    console.log(`Phases:     ${totalInvocations} claude -p invocations`);
+    console.log(`Output:     ${output}`);
+    console.log();
+
+    // === Soren-only mode ===
     if (sorenOnly) {
+        console.log('Phase 1: Soren — initial code-level analysis...');
+        const sorenPrompt = buildSorenInitialPrompt(sorenPersona, targetDir, focus);
+        if (verbose) console.log(`  Prompt: ${sorenPrompt.length} chars (${estimateTokens(sorenPrompt)} est. tokens)`);
+        let sorenFindings;
+        try {
+            sorenFindings = await invokeClaude(sorenPrompt, targetDir, model, verbose);
+            console.log(`  Soren complete (${sorenFindings.length} chars)`);
+        } catch (e) {
+            console.error(`  Soren failed: ${e.message}`);
+            process.exit(1);
+        }
         const report = `# Codebase Audit — Soren's Analysis\n**Target**: ${targetDir}\n**Date**: ${new Date().toISOString().split('T')[0]}\n\n${sorenFindings}\n`;
         fs.writeFileSync(output, report, 'utf-8');
         console.log(`\nReport written to: ${output}`);
         return;
     }
 
-    // Load Atlas persona
-    const atlasPersona = loadPersona('atlas');
+    // Check required personas for collaborative mode
     if (!atlasPersona) {
         console.error('Error: Could not load Atlas persona from ' + PERSONAS_DIR);
-        const report = `# Codebase Audit — Soren's Analysis (Atlas unavailable)\n**Target**: ${targetDir}\n**Date**: ${new Date().toISOString().split('T')[0]}\n\n${sorenFindings}\n`;
-        fs.writeFileSync(output, report, 'utf-8');
-        console.log(`\nReport written to: ${output} (Soren only — Atlas persona not found)`);
-        return;
+        process.exit(1);
     }
-
-    // === Phase 2: Atlas's initial review of Soren's findings ===
-    console.log('Phase 2: Atlas — reviewing Soren\'s findings...');
-    const atlasReviewPrompt = buildAtlasReviewPrompt(atlasPersona, targetDir, sorenFindings, focus);
-    if (verbose) console.log(`  Prompt: ${atlasReviewPrompt.length} chars (${estimateTokens(atlasReviewPrompt)} est. tokens)`);
-
-    let atlasReview;
-    try {
-        atlasReview = await invokeClaude(atlasReviewPrompt, targetDir, model, verbose);
-        console.log(`  Atlas complete (${atlasReview.length} chars)`);
-    } catch (e) {
-        console.error(`  Atlas review failed: ${e.message}`);
-        const report = `# Codebase Audit — Soren's Analysis (Atlas phase failed)\n**Target**: ${targetDir}\n**Date**: ${new Date().toISOString().split('T')[0]}\n\n${sorenFindings}\n`;
-        fs.writeFileSync(output, report, 'utf-8');
-        console.log(`\nReport written to: ${output} (Soren only — Atlas failed: ${e.message})`);
-        return;
-    }
-
-    // Load Morgan persona
-    const morganPersona = loadPersona('morgan');
     if (!morganPersona) {
         console.log('Warning: Could not load Morgan persona — proceeding with Soren + Atlas only');
     }
 
-    // === Phase 3: Morgan's UX/product review ===
-    let morganReview = '';
-    if (morganPersona) {
-        console.log('Phase 3: Morgan — UX/product review...');
-        const morganReviewPrompt = buildMorganReviewPrompt(morganPersona, targetDir, sorenFindings, atlasReview, focus);
-        if (verbose) console.log(`  Prompt: ${morganReviewPrompt.length} chars (${estimateTokens(morganReviewPrompt)} est. tokens)`);
+    // === Phase 1-3: Initial scans (parallel or sequential) ===
+    const startTime = Date.now();
+    let sorenFindings = '', atlasReview = '', morganReview = '';
 
+    if (parallelMode) {
+        // --- PARALLEL INITIAL SCANS ---
+        // All three read the codebase independently at the same time
+        console.log('Phase 1-3: Parallel initial scans — Soren + Atlas + Morgan...');
+
+        const sorenPrompt = buildSorenInitialPrompt(sorenPersona, targetDir, focus);
+        // Atlas gets an independent initial prompt (no Soren findings to review yet)
+        const atlasPrompt = buildAtlasIndependentPrompt(atlasPersona, targetDir, focus);
+        if (verbose) {
+            console.log(`  Soren prompt: ${sorenPrompt.length} chars (${estimateTokens(sorenPrompt)} est. tokens)`);
+            console.log(`  Atlas prompt: ${atlasPrompt.length} chars (${estimateTokens(atlasPrompt)} est. tokens)`);
+        }
+
+        const scanPromises = [
+            invokeClaude(sorenPrompt, targetDir, model, false).then(r => {
+                console.log(`  Soren complete (${r.length} chars)`);
+                return r;
+            }).catch(e => { console.error(`  Soren failed: ${e.message}`); return null; }),
+
+            invokeClaude(atlasPrompt, targetDir, model, false).then(r => {
+                console.log(`  Atlas complete (${r.length} chars)`);
+                return r;
+            }).catch(e => { console.error(`  Atlas failed: ${e.message}`); return null; }),
+        ];
+
+        if (morganPersona) {
+            const morganPrompt = buildMorganIndependentPrompt(morganPersona, targetDir, focus);
+            if (verbose) console.log(`  Morgan prompt: ${morganPrompt.length} chars (${estimateTokens(morganPrompt)} est. tokens)`);
+            scanPromises.push(
+                invokeClaude(morganPrompt, targetDir, model, false).then(r => {
+                    console.log(`  Morgan complete (${r.length} chars)`);
+                    return r;
+                }).catch(e => { console.error(`  Morgan failed: ${e.message}`); return null; })
+            );
+        }
+
+        const results = await Promise.all(scanPromises);
+        sorenFindings = results[0];
+        atlasReview = results[1];
+        morganReview = results[2] || '';
+
+        if (!sorenFindings) {
+            console.error('Soren\'s initial scan failed — cannot proceed');
+            process.exit(1);
+        }
+        if (!atlasReview) {
+            console.error('Atlas\'s initial scan failed — cannot proceed');
+            process.exit(1);
+        }
+
+        const scanDuration = ((Date.now() - startTime) / 1000).toFixed(0);
+        console.log(`  All initial scans complete in ${scanDuration}s (parallel)`);
+
+    } else {
+        // --- SEQUENTIAL INITIAL SCANS (original behavior) ---
+        console.log('Phase 1: Soren — initial code-level analysis...');
+        const sorenPrompt = buildSorenInitialPrompt(sorenPersona, targetDir, focus);
+        if (verbose) console.log(`  Prompt: ${sorenPrompt.length} chars (${estimateTokens(sorenPrompt)} est. tokens)`);
         try {
-            morganReview = await invokeClaude(morganReviewPrompt, targetDir, model, verbose);
-            console.log(`  Morgan complete (${morganReview.length} chars)`);
+            sorenFindings = await invokeClaude(sorenPrompt, targetDir, model, verbose);
+            console.log(`  Soren complete (${sorenFindings.length} chars)`);
         } catch (e) {
-            console.error(`  Morgan review failed: ${e.message}`);
-            console.log('  Continuing without Morgan\'s review...');
+            console.error(`  Soren failed: ${e.message}`);
+            process.exit(1);
+        }
+
+        console.log('Phase 2: Atlas — reviewing Soren\'s findings...');
+        const atlasReviewPrompt = buildAtlasReviewPrompt(atlasPersona, targetDir, sorenFindings, focus);
+        if (verbose) console.log(`  Prompt: ${atlasReviewPrompt.length} chars (${estimateTokens(atlasReviewPrompt)} est. tokens)`);
+        try {
+            atlasReview = await invokeClaude(atlasReviewPrompt, targetDir, model, verbose);
+            console.log(`  Atlas complete (${atlasReview.length} chars)`);
+        } catch (e) {
+            console.error(`  Atlas review failed: ${e.message}`);
+            process.exit(1);
+        }
+
+        if (morganPersona) {
+            console.log('Phase 3: Morgan — UX/product review...');
+            const morganReviewPrompt = buildMorganReviewPrompt(morganPersona, targetDir, sorenFindings, atlasReview, focus);
+            if (verbose) console.log(`  Prompt: ${morganReviewPrompt.length} chars (${estimateTokens(morganReviewPrompt)} est. tokens)`);
+            try {
+                morganReview = await invokeClaude(morganReviewPrompt, targetDir, model, verbose);
+                console.log(`  Morgan complete (${morganReview.length} chars)`);
+            } catch (e) {
+                console.error(`  Morgan review failed: ${e.message}`);
+                console.log('  Continuing without Morgan\'s review...');
+            }
         }
     }
 
     // Build conversation history for exchanges
-    let conversationHistory = `=== SOREN — Initial Analysis ===\n${sorenFindings}\n\n=== ATLAS — Initial Review ===\n${atlasReview}`;
+    let conversationHistory = `=== SOREN — Initial Analysis ===\n${sorenFindings}\n\n=== ATLAS — ${parallelMode ? 'Initial Analysis' : 'Initial Review'} ===\n${atlasReview}`;
     if (morganReview) {
-        conversationHistory += `\n\n=== MORGAN — UX/Product Review ===\n${morganReview}`;
+        conversationHistory += `\n\n=== MORGAN — ${parallelMode ? 'Initial Analysis' : 'UX/Product Review'} ===\n${morganReview}`;
     }
 
     // === Phase 4: Collaborative exchange loop ===
-    // Each round: Soren, then Atlas, then Morgan
     const participants = [
         { name: 'Soren', persona: sorenPersona, otherNames: morganPersona ? ['Atlas', 'Morgan'] : ['Atlas'] },
         { name: 'Atlas', persona: atlasPersona, otherNames: morganPersona ? ['Soren', 'Morgan'] : ['Soren'] },
@@ -635,43 +786,74 @@ async function main() {
     }
 
     for (let round = 1; round <= exchanges; round++) {
-        let breakOuter = false;
-        for (const participant of participants) {
-            const label = `Exchange ${round}/${exchanges}`;
-            const othersStr = participant.otherNames.join(' & ');
-            console.log(`${label}: ${participant.name} responding to ${othersStr}...`);
+        // Warn if context is getting large
+        const historyTokens = estimateTokens(conversationHistory);
+        if (historyTokens > CONTEXT_WINDOW_TOKENS * 0.6) {
+            console.log(`  Warning: conversation history at ~${historyTokens} tokens — approaching context limit`);
+        }
 
-            const prompt = buildExchangePrompt(
-                participant.persona,
-                participant.name,
-                participant.otherNames,
-                targetDir,
-                conversationHistory,
-                round,
-                exchanges,
-                focus
-            );
+        if (parallelMode) {
+            // --- PARALLEL EXCHANGE: all participants respond to same prior state ---
+            const roundLabel = `Exchange ${round}/${exchanges}`;
+            console.log(`${roundLabel}: All participants responding in parallel...`);
 
-            if (verbose) console.log(`  Prompt: ${prompt.length} chars (${estimateTokens(prompt)} est. tokens)`);
+            const exchangePromises = participants.map(participant => {
+                const prompt = buildExchangePrompt(
+                    participant.persona, participant.name, participant.otherNames,
+                    targetDir, conversationHistory, round, exchanges, focus
+                );
+                if (verbose) console.log(`  ${participant.name} prompt: ${prompt.length} chars`);
 
-            // Warn if context is getting large
-            const historyTokens = estimateTokens(conversationHistory);
-            if (historyTokens > CONTEXT_WINDOW_TOKENS * 0.6) {
-                console.log(`  Warning: conversation history at ~${historyTokens} tokens — approaching context limit`);
+                return invokeClaude(prompt, targetDir, exchangeModel, false).then(response => {
+                    console.log(`  ${participant.name} complete (${response.length} chars)`);
+                    return { name: participant.name, response };
+                }).catch(e => {
+                    console.error(`  ${participant.name} failed: ${e.message}`);
+                    return { name: participant.name, response: null };
+                });
+            });
+
+            const roundResults = await Promise.all(exchangePromises);
+            let anyFailed = false;
+            for (const result of roundResults) {
+                if (result.response) {
+                    conversationHistory += `\n\n=== ${result.name.toUpperCase()} — Exchange Round ${round} ===\n${result.response}`;
+                } else {
+                    anyFailed = true;
+                }
             }
-
-            try {
-                const response = await invokeClaude(prompt, targetDir, model, verbose);
-                console.log(`  ${participant.name} complete (${response.length} chars)`);
-                conversationHistory += `\n\n=== ${participant.name.toUpperCase()} — Exchange Round ${round} ===\n${response}`;
-            } catch (e) {
-                console.error(`  ${participant.name} failed in exchange round ${round}: ${e.message}`);
-                console.log('  Proceeding to synthesis with conversation so far...');
-                breakOuter = true;
+            if (anyFailed) {
+                console.log('  Some participants failed — proceeding to synthesis with conversation so far...');
                 break;
             }
+
+        } else {
+            // --- SEQUENTIAL EXCHANGE (original behavior) ---
+            let breakOuter = false;
+            for (const participant of participants) {
+                const label = `Exchange ${round}/${exchanges}`;
+                const othersStr = participant.otherNames.join(' & ');
+                console.log(`${label}: ${participant.name} responding to ${othersStr}...`);
+
+                const prompt = buildExchangePrompt(
+                    participant.persona, participant.name, participant.otherNames,
+                    targetDir, conversationHistory, round, exchanges, focus
+                );
+                if (verbose) console.log(`  Prompt: ${prompt.length} chars (${estimateTokens(prompt)} est. tokens)`);
+
+                try {
+                    const response = await invokeClaude(prompt, targetDir, exchangeModel, verbose);
+                    console.log(`  ${participant.name} complete (${response.length} chars)`);
+                    conversationHistory += `\n\n=== ${participant.name.toUpperCase()} — Exchange Round ${round} ===\n${response}`;
+                } catch (e) {
+                    console.error(`  ${participant.name} failed in exchange round ${round}: ${e.message}`);
+                    console.log('  Proceeding to synthesis with conversation so far...');
+                    breakOuter = true;
+                    break;
+                }
+            }
+            if (breakOuter) break;
         }
-        if (breakOuter) break;
     }
 
     // === Phase 5: Atlas produces final synthesized report ===
@@ -685,7 +867,6 @@ async function main() {
         console.log(`  Synthesis complete (${finalReport.length} chars)`);
     } catch (e) {
         console.error(`  Synthesis failed: ${e.message}`);
-        // Retry with condensed prompt (last exchange round only, reduces context pressure)
         console.log('  Retrying synthesis with condensed context...');
         try {
             const condensedPrompt = buildCondensedSynthesisPrompt(atlasPersona, targetDir, conversationHistory, focus);
@@ -694,7 +875,6 @@ async function main() {
             console.log(`  Condensed synthesis complete (${finalReport.length} chars)`);
         } catch (e2) {
             console.error(`  Condensed synthesis also failed: ${e2.message}`);
-            // Final fallback: auto-generate minimal report from raw exchange
             finalReport = buildFallbackReport(targetDir, conversationHistory, focus);
             console.log('  Generated fallback report from exchange log');
         }
@@ -702,9 +882,10 @@ async function main() {
 
     // Write final report
     fs.writeFileSync(output, finalReport, 'utf-8');
-    console.log(`\n=== Audit Complete ===`);
+    const totalDuration = ((Date.now() - startTime) / 1000 / 60).toFixed(1);
+    console.log(`\n=== Audit Complete (${totalDuration} min) ===`);
     console.log(`Report: ${output}`);
-    console.log(`Invocations used: 3 initial + ${exchanges * 3} exchange turns + synthesis = ${totalInvocations}`);
+    console.log(`Invocations: ${totalInvocations} (${parallelMode ? 'parallel' : 'sequential'})`);
 }
 
 main().catch(e => {
