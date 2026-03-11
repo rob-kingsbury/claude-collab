@@ -1,10 +1,10 @@
 ---
 name: collab-audit
-description: "Run a collaborative codebase audit using Soren, Atlas, and Morgan (AI personas with persistent identities). Use when the user wants a thorough code review, security audit, performance analysis, or architecture review of a project. Invoke with /collab-audit or when the user asks for a 'collab audit', 'team audit', or similar."
+description: "Run a collaborative codebase audit OR pre-flight plan review using Soren, Atlas, and Morgan (AI personas with persistent identities). Use for code audits, security reviews, architecture analysis, OR for pre-flight planning before implementing a feature (use --plan flag). Invoke with /collab-audit or when the user asks for a 'collab audit', 'team audit', 'plan review', 'pre-flight check', or similar."
 disable-model-invocation: false
 ---
 
-# Collab Audit — Collaborative Codebase Analysis
+# Collab Audit / Plan — Collaborative Codebase Analysis & Pre-Flight Planning
 
 Run a collaborative multi-round codebase audit using Soren, Atlas, and Morgan — AI personas with persistent identities maintained via the Claude Collab system.
 
@@ -120,7 +120,45 @@ User: "/collab-audit c:\xampp\htdocs\ai-ta"
 
 User: "Quick audit, just Soren's pass"
 → node "c:\xampp\htdocs\claude-collab\collab-audit\audit.js" "C:\xampp\htdocs\current-project" --soren-only --verbose
+
+User: "Do a pre-flight plan review for adding notifications to my app"
+→ node "c:\xampp\htdocs\claude-collab\collab-audit\audit.js" --plan "Add a real-time notification system to the dashboard with in-app alerts and email digests" --context "C:\xampp\htdocs\current-project" --verbose
+
+User: "Have the team review this feature spec before I start building"
+→ node "c:\xampp\htdocs\claude-collab\collab-audit\audit.js" --plan-file "C:\plans\feature-spec.md" --context "C:\xampp\htdocs\current-project" --verbose
+
+User: "Quick plan sanity check from Soren only"
+→ node "c:\xampp\htdocs\claude-collab\collab-audit\audit.js" --plan "description" --soren-only --verbose
 ```
+
+## Plan Mode
+
+When the user wants to review a plan, feature spec, or implementation idea **before** writing code, use `--plan` mode instead of the audit mode.
+
+### When to use plan mode
+- "I want to build X, what should I consider?"
+- "Review this plan / spec before I start"
+- "Pre-flight check on this feature"
+- "What design direction should I use for X?"
+- "Is this architecture sound before I build it?"
+
+### Plan mode output
+The plan review produces `plan-review.md` with:
+- **Readiness assessment** (GO / CAUTION / STOP from each reviewer)
+- **Morgan's Design Brief** — top design directions with specific styles, colors, typography, component kit
+- **Soren's Implementation Blueprint** — recommended approach, code patterns, test strategy
+- **Atlas's Architecture Blueprint** — system design, integration points, phasing
+- **Risks, gaps, open questions, and recommended first phase**
+
+### Focus routing for plans
+
+| User intent | Focus flag |
+|-------------|-----------|
+| "what design style should I use?" | `--focus "ux,design,visual"` |
+| "is this architecture sound?" | `--focus "architecture,system-design"` |
+| "will this be secure?" | `--focus "security,auth"` |
+| "is this implementable?" | `--focus "implementation,complexity"` |
+| Full pre-flight | no `--focus` flag |
 
 ## Architecture Reference
 

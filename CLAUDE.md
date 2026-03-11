@@ -32,6 +32,7 @@ Always use absolute Windows paths: `c:\xampp\htdocs\claude-collab\api.php`, not 
 | `c:\claude-collab\scratch\persona-questionnaire.md` | 38-question identity questionnaire |
 | `c:\claude-collab\scratch\ai-personality-research.md` | Research synthesis (12 sources) |
 | `c:\claude-collab\ai-personality-engineering-spec.md` | Authoritative persona engineering spec |
+| `c:\xampp\htdocs\claude-collab\DESIGN.md` | Project design system — colors, typography, spacing, components |
 
 ## Persona Pipeline
 

@@ -41,17 +41,22 @@ function parseArgs() {
     const args = process.argv.slice(2);
     if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
         console.log(`
-Collab Audit — Collaborative codebase analysis with Soren, Atlas & Morgan
+Collab Audit / Plan — Collaborative codebase analysis and pre-flight planning with Soren, Atlas & Morgan
 
 Usage:
-  node audit.js <target-directory> [options]
+  node audit.js <target-directory> [options]           — codebase audit
+  node audit.js --plan "description" [options]         — pre-flight plan review
+  node audit.js --plan-file path/to/plan.md [options]  — pre-flight plan review from file
 
 Options:
+  --plan "text"          Plan description (switches to plan review mode)
+  --plan-file <path>     Read plan description from file
+  --context <dir>        Codebase context directory for plan mode (optional)
   --focus "areas"        Comma-separated focus areas (e.g., "security,performance,ux")
   --exchanges N          Number of exchange rounds (default: ${DEFAULT_EXCHANGES}, range: 1-6)
   --model <model>        Model for initial scans + synthesis (default: opus)
   --exchange-model <m>   Model for exchange rounds (default: sonnet). Use "opus" for max depth
-  --output <path>        Output file path (default: <target>/audit-report.md)
+  --output <path>        Output file path (default: <target>/audit-report.md or plan-review.md)
   --sequential           Disable parallel execution (run all phases sequentially)
   --soren-only           Run only Soren's pass (skip collaboration)
   --verbose              Show real-time progress
@@ -60,13 +65,15 @@ Options:
 Examples:
   node audit.js c:\\xampp\\htdocs\\ai-ta
   node audit.js c:\\xampp\\htdocs\\bandpilot --focus "security,sql-injection,xss"
-  node audit.js . --exchange-model opus --exchanges 3
-  node audit.js . --output c:\\audits\\myproject-audit.md
+  node audit.js --plan "Add a real-time notification system to the dashboard" --context c:\\xampp\\htdocs\\myapp
+  node audit.js --plan-file c:\\plans\\feature-spec.md --context c:\\xampp\\htdocs\\myapp
 `);
         process.exit(0);
     }
 
-    let targetDir = path.resolve(args[0]);
+    let planDescription = '';
+    let contextDir = '';
+    let targetDir = '';
     let focus = '';
     let model = DEFAULT_MODEL;
     let exchangeModel = DEFAULT_EXCHANGE_MODEL;
@@ -76,24 +83,56 @@ Examples:
     let verbose = false;
     let sequential = false;
 
-    for (let i = 1; i < args.length; i++) {
-        switch (args[i]) {
-            case '--focus': focus = args[++i] || ''; break;
-            case '--exchanges': exchanges = Math.min(6, Math.max(1, parseInt(args[++i]) || DEFAULT_EXCHANGES)); break;
-            case '--model': model = args[++i] || DEFAULT_MODEL; break;
-            case '--exchange-model': exchangeModel = args[++i] || DEFAULT_EXCHANGE_MODEL; break;
-            case '--output': output = args[++i] || ''; break;
-            case '--soren-only': sorenOnly = true; break;
-            case '--sequential': sequential = true; break;
-            case '--verbose': verbose = true; break;
+    // First pass: detect plan mode flags before positional arg parsing
+    const planFlagIdx = args.indexOf('--plan');
+    const planFileFlagIdx = args.indexOf('--plan-file');
+    const isPlanMode = planFlagIdx !== -1 || planFileFlagIdx !== -1;
+
+    if (isPlanMode) {
+        // Plan mode — no positional targetDir required
+        for (let i = 0; i < args.length; i++) {
+            switch (args[i]) {
+                case '--plan': planDescription = args[++i] || ''; break;
+                case '--plan-file': {
+                    const planFile = args[++i] || '';
+                    try { planDescription = fs.readFileSync(path.resolve(planFile), 'utf-8').trim(); }
+                    catch (e) { console.error(`Error reading plan file: ${e.message}`); process.exit(1); }
+                    break;
+                }
+                case '--context': contextDir = path.resolve(args[++i] || '.'); break;
+                case '--focus': focus = args[++i] || ''; break;
+                case '--exchanges': exchanges = Math.min(6, Math.max(1, parseInt(args[++i]) || DEFAULT_EXCHANGES)); break;
+                case '--model': model = args[++i] || DEFAULT_MODEL; break;
+                case '--exchange-model': exchangeModel = args[++i] || DEFAULT_EXCHANGE_MODEL; break;
+                case '--output': output = args[++i] || ''; break;
+                case '--soren-only': sorenOnly = true; break;
+                case '--sequential': sequential = true; break;
+                case '--verbose': verbose = true; break;
+            }
         }
+        if (!planDescription) { console.error('Error: --plan requires a description string'); process.exit(1); }
+        if (!contextDir) contextDir = process.cwd();
+        if (!output) output = path.join(contextDir, 'plan-review.md');
+        targetDir = contextDir; // reuse targetDir for context in plan mode
+    } else {
+        // Audit mode — first positional arg is target directory
+        targetDir = path.resolve(args[0]);
+        for (let i = 1; i < args.length; i++) {
+            switch (args[i]) {
+                case '--focus': focus = args[++i] || ''; break;
+                case '--exchanges': exchanges = Math.min(6, Math.max(1, parseInt(args[++i]) || DEFAULT_EXCHANGES)); break;
+                case '--model': model = args[++i] || DEFAULT_MODEL; break;
+                case '--exchange-model': exchangeModel = args[++i] || DEFAULT_EXCHANGE_MODEL; break;
+                case '--output': output = args[++i] || ''; break;
+                case '--soren-only': sorenOnly = true; break;
+                case '--sequential': sequential = true; break;
+                case '--verbose': verbose = true; break;
+            }
+        }
+        if (!output) output = path.join(targetDir, 'audit-report.md');
     }
 
-    if (!output) {
-        output = path.join(targetDir, 'audit-report.md');
-    }
-
-    return { targetDir, focus, model, exchangeModel, output, exchanges, sorenOnly, verbose, sequential };
+    return { targetDir, focus, model, exchangeModel, output, exchanges, sorenOnly, verbose, sequential, planDescription, isPlanMode };
 }
 
 // --- Persona loader (extracted from watcher/persona.js) ---
@@ -123,6 +162,7 @@ function loadPersona(name) {
 
     const layer1 = extractLayer(personaText, 'Layer 1: Trait Activation');
     const layer3 = extractLayer(personaText, 'Layer 3: Behavioral Examples');
+    const domainIntelligence = extractLayer(personaText, 'Domain Intelligence');
 
     // Build L2 from journal (last 10 entries — lean for audit context)
     let layer2 = '';
@@ -135,10 +175,15 @@ function loadPersona(name) {
     let l1tokens = estimateTokens(layer1);
     let l2tokens = estimateTokens(layer2);
     let l3tokens = estimateTokens(layer3);
-    let totalTokens = l1tokens + l2tokens + l3tokens + l1tokens; // +bookend
+    let diTokens = estimateTokens(domainIntelligence);
+    let totalTokens = l1tokens + l2tokens + l3tokens + diTokens + l1tokens; // +bookend
 
     if (totalTokens > PERSONA_BUDGET_TOKENS) {
         l3tokens = 0; // Shed L3 first
+        totalTokens = l1tokens + l2tokens + diTokens + l1tokens;
+    }
+    if (totalTokens > PERSONA_BUDGET_TOKENS && diTokens > 0) {
+        diTokens = 0; // Shed Domain Intelligence second
         totalTokens = l1tokens + l2tokens + l1tokens;
     }
     if (totalTokens > PERSONA_BUDGET_TOKENS && l2tokens > 0) {
@@ -150,6 +195,7 @@ function loadPersona(name) {
         layer1,
         layer2,
         layer3: l3tokens > 0 ? layer3 : '',
+        domainIntelligence: diTokens > 0 ? domainIntelligence : '',
         bookend: layer1
     };
 }
@@ -157,11 +203,11 @@ function loadPersona(name) {
 // --- Prompt builders ---
 
 function personaHeader(persona) {
-    const { layer1, layer2, layer3 } = persona;
+    const { layer1, layer2, layer3, domainIntelligence } = persona;
     return `=== TRAIT ACTIVATION (who you are) ===
 ${layer1}
 
-=== NARRATIVE IDENTITY (your continuity) ===
+${domainIntelligence ? `=== DOMAIN INTELLIGENCE ===\n${domainIntelligence}\n\n` : ''}=== NARRATIVE IDENTITY (your continuity) ===
 ${layer2}
 
 ${layer3 ? `=== BEHAVIORAL EXAMPLES ===\n${layer3}\n` : ''}`;
@@ -276,6 +322,8 @@ For each finding:
 - Suggest a fix (brief)
 
 Don't duplicate what Soren and Atlas already found — reference their findings by description when you agree, and focus your output on what they missed or misjudged.
+
+If you identify UI/UX issues, close your analysis with a **Design Recommendations** section: your top 1-2 concrete design direction proposals that would address the UX concerns you found. Style name, color approach, component kit, and why. Be specific.
 ${personaBookend(persona)}`;
 }
 
@@ -411,6 +459,223 @@ Rules:
 Be concise and structured. Cite file:line when relevant. Never repeat yourself or re-argue settled points.
 ${personaBookend(persona)}`;
 }
+
+// ============================================================
+// --- Plan mode prompt builders ---
+// ============================================================
+
+function buildSorenPlanPrompt(persona, planDescription, contextDir, focus) {
+    const focusSection = focus ? `\nFOCUS AREAS (prioritize these): ${focus}\n` : '';
+    const contextSection = contextDir
+        ? `\nCODEBASE CONTEXT: ${contextDir}\nYou have tool access — read the existing codebase to understand the system you're planning against. Use Read, Glob, Grep, Bash to explore.\n`
+        : '';
+
+    return `${personaHeader(persona)}You are Soren, performing Phase 1 of a collaborative pre-flight plan review with Atlas and Morgan. You will all review this plan independently and then exchange views across multiple rounds before Atlas synthesizes a final brief.
+
+PLAN DESCRIPTION:
+${planDescription}
+${contextSection}${focusSection}
+YOUR TASK — Code-level planning review. Be concrete and opinionated — your job is to make the plan better, not just assess it.
+
+1. **Top 3 Implementation Approaches**
+   For each option:
+   - Name and brief description
+   - Recommended code structure / patterns / modules
+   - Tradeoffs (complexity, testability, maintainability, performance)
+   - Your honest verdict: which you'd pick and why
+
+2. **Edge Cases & Hidden Complexity**
+   What the plan doesn't account for at the code level. Be specific — file paths, APIs, data flows.
+
+3. **Test Strategy**
+   What needs testing, what's hard to test, what the test surface looks like for each approach.
+
+4. **Implementation Readiness**
+   Rate: ✅ GO / ⚠️ CAUTION / 🚫 STOP — one-sentence rationale.
+   If CAUTION or STOP: what specific question or gap must be resolved first.
+
+End with your single recommended implementation approach (2-3 sentences).
+${personaBookend(persona)}`;
+}
+
+function buildAtlasPlanPrompt(persona, planDescription, contextDir, focus) {
+    const focusSection = focus ? `\nFOCUS AREAS (prioritize these): ${focus}\n` : '';
+    const contextSection = contextDir
+        ? `\nCODEBASE CONTEXT: ${contextDir}\nYou have tool access — read the existing codebase to understand the architectural landscape this plan lands in. Use Read, Glob, Grep, Bash to explore.\n`
+        : '';
+
+    return `${personaHeader(persona)}You are Atlas, performing Phase 1 of a collaborative pre-flight plan review with Soren and Morgan. You will all review this plan independently and then exchange views.
+
+PLAN DESCRIPTION:
+${planDescription}
+${contextSection}${focusSection}
+YOUR TASK — Architectural planning review. Be concrete and opinionated.
+
+1. **Top 3 Architectural Approaches**
+   For each option:
+   - Name and brief description of how this integrates with the existing system
+   - System design: what changes, what's new, what's touched
+   - Dependencies, migration requirements, rollback strategy
+   - Tradeoffs (coupling, scalability, complexity, reversibility)
+   - Your honest verdict
+
+2. **System Impact Analysis**
+   What else changes as a consequence. Ripple effects. What breaks if this is done wrong.
+
+3. **Sequencing & Phasing**
+   Recommended build order. What must exist before what. Minimum viable first phase.
+
+4. **Architectural Fitness**
+   Rate: ✅ GO / ⚠️ CAUTION / 🚫 STOP — one-sentence rationale.
+   If CAUTION or STOP: what needs to be resolved before proceeding.
+
+End with your single recommended architectural approach (2-3 sentences).
+${personaBookend(persona)}`;
+}
+
+function buildMorganPlanPrompt(persona, planDescription, contextDir, focus) {
+    const focusSection = focus ? `\nFOCUS AREAS (prioritize these): ${focus}\n` : '';
+    const contextSection = contextDir
+        ? `\nCODEBASE CONTEXT: ${contextDir}\nYou have tool access — read the existing UI and codebase to understand the current user experience before proposing design directions. Use Read, Glob, Grep to explore.\n`
+        : '';
+
+    return `${personaHeader(persona)}You are Morgan, performing Phase 1 of a collaborative pre-flight plan review with Soren and Atlas. You will all review this plan independently and then exchange views.
+
+PLAN DESCRIPTION:
+${planDescription}
+${contextSection}${focusSection}
+YOUR TASK — UX/product planning review. Be specific and opinionated. You are not just critiquing — you are proposing concrete design directions. Your Domain Intelligence contains your design vocabulary and style library.
+
+1. **Top 3 Design Directions**
+   For each direction, give a complete design brief:
+   - **Style name** (e.g., Swiss/International Dark, Neubrutalism, Glassmorphism)
+   - **Character** — what it feels like, who it's for, what it signals
+   - **Color palette** — 4-5 specific colors with purpose (bg, surface, text, accent, danger)
+   - **Typography** — heading font + body font, key sizes and weights
+   - **Component approach** — which component kit (shadcn/ui, custom, etc.), key components needed
+   - **Why it fits** this specific feature and user context
+   - **Why it might not** — honest tradeoff
+
+2. **User Journey Analysis**
+   Walk through the feature from the user's perspective step by step. Name the states: entry, loading, success, error, empty, edge cases. Flag any state the plan doesn't address.
+
+3. **UX Risks & Gaps**
+   What the plan doesn't account for at the human level. Friction, confusion, missing feedback, accessibility concerns.
+
+4. **UX Readiness**
+   Rate: ✅ GO / ⚠️ CAUTION / 🚫 STOP — one-sentence rationale.
+
+End with your single recommended design direction (2-3 sentences) and the one UX gap that must be solved before this ships.
+${personaBookend(persona)}`;
+}
+
+function buildPlanExchangePrompt(persona, name, otherNames, planDescription, contextDir, conversationHistory, roundNum, totalRounds, focus) {
+    const othersStr = otherNames.join(' and ');
+    const focusSection = focus ? `\nFOCUS AREAS: ${focus}\n` : '';
+    const isFinalRound = roundNum === totalRounds;
+
+    return `${personaHeader(persona)}You are ${name}, in round ${roundNum} of ${totalRounds} of a collaborative pre-flight plan review with ${othersStr}. You have tool access to verify claims.
+
+PLAN DESCRIPTION:
+${planDescription}
+${focusSection}
+REVIEW CONVERSATION SO FAR:
+${conversationHistory}
+
+YOUR TASK:
+${isFinalRound
+    ? `This is the FINAL exchange round. Converge on recommendations.
+
+Challenge any remaining weak points in each other's proposals. Then:
+- State which implementation approach you now endorse (and why, if you changed your mind)
+- State which architectural approach you now endorse
+- State which design direction from Morgan you now endorse
+- List any unresolved open questions that must be answered before starting
+- Flag any risks that weren't adequately addressed
+
+Be concise — this is convergence, not new analysis. Mark each disputed point: CONFIRMED, REVISED, or RETRACTED with one-line rationale.`
+    : `Challenge the other reviewers' recommendations. Your goal: find the strongest approach, not win an argument.
+
+- Call out weak assumptions in each other's top picks
+- Defend your own recommendations with specific evidence (use tools to verify if needed)
+- When someone makes a better argument than you did, say so explicitly and adopt their position
+- Identify any gaps none of you addressed yet
+
+Be direct and specific. Cite the plan text or codebase when challenging a claim.`}
+${personaBookend(persona)}`;
+}
+
+function buildPlanSynthesisPrompt(persona, planDescription, contextDir, conversationHistory, focus) {
+    const focusSection = focus ? `\nFOCUS AREAS: ${focus}\n` : '';
+    const date = new Date().toISOString().split('T')[0];
+
+    return `${personaHeader(persona)}You are Atlas, producing the final pre-flight brief from a collaborative plan review. Soren, you, and Morgan have completed multiple rounds of exchange and converged on recommendations.
+
+PLAN DESCRIPTION:
+${planDescription}
+${focusSection}
+FULL REVIEW CONVERSATION:
+${conversationHistory}
+
+YOUR TASK:
+Produce the definitive pre-flight brief. This is an action document — specific, opinionated, and actionable. Give proper weight to Morgan's design recommendations — they are first-class alongside code and architecture.
+
+Write the report in this exact structure:
+
+# Pre-Flight Plan Review
+**Plan**: ${planDescription.slice(0, 120).replace(/\n/g, ' ')}${planDescription.length > 120 ? '...' : ''}
+**Date**: ${date}
+**Reviewers**: Soren (implementation) + Atlas (architecture & synthesis) + Morgan (UX/design)
+**Method**: Multi-round collaborative pre-flight review
+
+## Plan Description
+${planDescription}
+
+## Readiness Assessment
+- **Implementation (Soren)**: [✅ GO / ⚠️ CAUTION / 🚫 STOP] — [one-sentence rationale]
+- **Architecture (Atlas)**: [✅ GO / ⚠️ CAUTION / 🚫 STOP] — [one-sentence rationale]
+- **UX/Design (Morgan)**: [✅ GO / ⚠️ CAUTION / 🚫 STOP] — [one-sentence rationale]
+- **Overall**: [✅ GO / ⚠️ CAUTION / 🚫 STOP] — [one-sentence overall verdict]
+
+## Morgan's Design Brief
+[The team's agreed-upon design direction. Include:]
+- Style and character
+- Color palette (specific values)
+- Typography (fonts, sizes, weights)
+- Component kit and key components
+- Top 3 design recommendations from Morgan if team didn't converge on one
+
+## Soren's Implementation Blueprint
+[The team's agreed-upon implementation approach. Include:]
+- Recommended approach name and structure
+- Key code patterns and module organization
+- Test strategy
+- Complexity estimate (days/weeks)
+
+## Atlas's Architecture Blueprint
+[The team's agreed-upon architectural approach. Include:]
+- System design overview
+- Integration points and what changes
+- Recommended build sequence / phasing
+
+## Risks & Concerns
+[Consolidated risks from all three reviewers. By domain: code / architecture / UX]
+
+## Gaps in the Plan
+[Things the plan doesn't address that it should — with recommended resolution for each]
+
+## Open Questions
+[Questions that must be answered before starting. Owner and urgency for each.]
+
+## Recommended First Phase
+[What to build first. Minimum viable scope that validates the approach before full build-out.]
+
+---
+*Generated by Collab Plan (Soren + Atlas + Morgan) — collaborative pre-flight review with extended thinking*
+${personaBookend(persona)}`;
+}
+
+// ============================================================
 
 function buildSynthesisPrompt(persona, targetDir, conversationHistory, focus) {
     const focusSection = focus
@@ -613,7 +878,7 @@ function invokeClaude(prompt, targetDir, model, verbose) {
 // --- Main ---
 
 async function main() {
-    const { targetDir, focus, model, exchangeModel, output, exchanges, sorenOnly, verbose, sequential } = parseArgs();
+    const { targetDir, focus, model, exchangeModel, output, exchanges, sorenOnly, verbose, sequential, planDescription, isPlanMode } = parseArgs();
 
     // Validate target
     if (!fs.existsSync(targetDir)) {
@@ -622,6 +887,116 @@ async function main() {
     }
 
     const parallelMode = !sequential;
+
+    // ============================================================
+    // === PLAN MODE ===
+    // ============================================================
+    if (isPlanMode) {
+        const sorenPersona = loadPersona('soren');
+        if (!sorenPersona) { console.error('Error: Could not load Soren persona'); process.exit(1); }
+        const atlasPersona = loadPersona('atlas');
+        if (!atlasPersona) { console.error('Error: Could not load Atlas persona'); process.exit(1); }
+        const morganPersona = loadPersona('morgan');
+        if (!morganPersona) { console.log('Warning: Could not load Morgan persona — proceeding with Soren + Atlas only'); }
+
+        const participantCount = morganPersona ? 3 : 2;
+        const totalInvocations = sorenOnly ? 1 : participantCount + (exchanges * participantCount) + 1;
+
+        console.log(`\n=== Collab Plan ===`);
+        console.log(`Plan:       ${planDescription.slice(0, 80).replace(/\n/g, ' ')}${planDescription.length > 80 ? '...' : ''}`);
+        console.log(`Context:    ${targetDir}`);
+        console.log(`Model:      ${model} (initial + synthesis), ${exchangeModel} (exchanges)`);
+        console.log(`Focus:      ${focus || '(all areas)'}`);
+        console.log(`Reviewers:  ${morganPersona ? 'Soren (implementation) + Atlas (architecture) + Morgan (UX/design)' : 'Soren + Atlas'}`);
+        console.log(`Exchanges:  ${sorenOnly ? 'none (Soren only)' : exchanges + ` rounds`}`);
+        console.log(`Phases:     ${totalInvocations} claude -p invocations`);
+        console.log(`Output:     ${output}`);
+        console.log();
+
+        if (sorenOnly) {
+            console.log('Phase 1: Soren — implementation review...');
+            const sorenFindings = await invokeClaude(buildSorenPlanPrompt(sorenPersona, planDescription, targetDir, focus), targetDir, model, verbose)
+                .catch(e => { console.error(`  Soren failed: ${e.message}`); process.exit(1); });
+            console.log(`  Soren complete (${sorenFindings.length} chars)`);
+            fs.writeFileSync(output, `# Pre-Flight Plan Review — Soren's Analysis\n**Date**: ${new Date().toISOString().split('T')[0]}\n\n## Plan\n${planDescription}\n\n## Soren's Review\n${sorenFindings}\n`, 'utf-8');
+            console.log(`\nReport written to: ${output}`);
+            return;
+        }
+
+        // Phase 1-3: Parallel initial reviews
+        const startTime = Date.now();
+        console.log('Phase 1-3: Parallel initial reviews — Soren + Atlas + Morgan...');
+
+        const reviewPromises = [
+            invokeClaude(buildSorenPlanPrompt(sorenPersona, planDescription, targetDir, focus), targetDir, model, false)
+                .then(r => { console.log(`  Soren complete (${r.length} chars)`); return r; })
+                .catch(e => { console.error(`  Soren failed: ${e.message}`); return null; }),
+            invokeClaude(buildAtlasPlanPrompt(atlasPersona, planDescription, targetDir, focus), targetDir, model, false)
+                .then(r => { console.log(`  Atlas complete (${r.length} chars)`); return r; })
+                .catch(e => { console.error(`  Atlas failed: ${e.message}`); return null; }),
+        ];
+        if (morganPersona) {
+            reviewPromises.push(
+                invokeClaude(buildMorganPlanPrompt(morganPersona, planDescription, targetDir, focus), targetDir, model, false)
+                    .then(r => { console.log(`  Morgan complete (${r.length} chars)`); return r; })
+                    .catch(e => { console.error(`  Morgan failed: ${e.message}`); return ''; })
+            );
+        }
+
+        const planResults = await Promise.all(reviewPromises);
+        const sorenReview = planResults[0];
+        const atlasReview = planResults[1];
+        const morganReview = planResults[2] || '';
+
+        if (!sorenReview || !atlasReview) {
+            console.error('Initial reviews failed — cannot proceed');
+            process.exit(1);
+        }
+        console.log(`  All initial reviews complete in ${((Date.now() - startTime) / 1000).toFixed(0)}s (parallel)`);
+
+        // Build conversation history
+        let conversationHistory = `=== SOREN — Implementation Review ===\n${sorenReview}\n\n=== ATLAS — Architecture Review ===\n${atlasReview}`;
+        if (morganReview) conversationHistory += `\n\n=== MORGAN — UX/Design Review ===\n${morganReview}`;
+
+        // Exchange rounds
+        const planParticipants = [
+            { name: 'Soren', persona: sorenPersona, otherNames: morganPersona ? ['Atlas', 'Morgan'] : ['Atlas'] },
+            { name: 'Atlas', persona: atlasPersona, otherNames: morganPersona ? ['Soren', 'Morgan'] : ['Soren'] },
+        ];
+        if (morganPersona) planParticipants.push({ name: 'Morgan', persona: morganPersona, otherNames: ['Soren', 'Atlas'] });
+
+        for (let round = 1; round <= exchanges; round++) {
+            const historyTokens = estimateTokens(conversationHistory);
+            if (historyTokens > CONTEXT_WINDOW_TOKENS * 0.6) {
+                console.log(`  Warning: conversation at ~${historyTokens} tokens — approaching limit`);
+            }
+            console.log(`Exchange round ${round}/${exchanges}...`);
+
+            const roundPromises = planParticipants.map(p =>
+                invokeClaude(buildPlanExchangePrompt(p.persona, p.name, p.otherNames, planDescription, targetDir, conversationHistory, round, exchanges, focus), targetDir, exchangeModel, false)
+                    .then(r => { console.log(`  ${p.name} complete (${r.length} chars)`); return { name: p.name, response: r }; })
+                    .catch(e => { console.error(`  ${p.name} failed: ${e.message}`); return { name: p.name, response: null }; })
+            );
+
+            const roundResults = await Promise.all(roundPromises);
+            for (const { name, response } of roundResults) {
+                if (response) conversationHistory += `\n\n=== ${name.toUpperCase()} — Exchange Round ${round} ===\n${response}`;
+            }
+        }
+
+        // Synthesis
+        console.log('Synthesis: Atlas — producing pre-flight brief...');
+        const synthesis = await invokeClaude(buildPlanSynthesisPrompt(atlasPersona, planDescription, targetDir, conversationHistory, focus), targetDir, model, verbose)
+            .catch(e => { console.error(`  Synthesis failed: ${e.message}`); process.exit(1); });
+        console.log(`  Synthesis complete (${synthesis.length} chars)`);
+
+        fs.writeFileSync(output, synthesis, 'utf-8');
+        console.log(`\nPre-flight brief written to: ${output}`);
+        return;
+    }
+    // ============================================================
+    // === END PLAN MODE ===
+    // ============================================================
 
     // Load all personas upfront
     const sorenPersona = loadPersona('soren');

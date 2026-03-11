@@ -1,40 +1,57 @@
-# Handoff -- 2026-03-11 (Session 11)
+# Handoff -- 2026-03-11 (Session 12)
 
 ## What Happened This Session
 
 ### Summary
-**Watcher self-stopping bug fixed.** Two bugs in `router.js` / `claude.js` caused the watcher to stop routing after Rob went inactive, requiring a manual session restart each time.
+**Morgan got a design brain.** Three upgrades: (1) Domain Intelligence — a permanent design knowledge module injected into her prompt every invocation covering 13 UI styles, industry defaults, anti-patterns, pre-delivery checklist, stack defaults, and component-first workflow. (2) Design preference learning — a `[DESIGN_PREF]` extraction system that captures Rob's personal taste over time and loads it back as a "Learned Preferences (Rob)" subsection. (3) Proactive recommendation posture — she leads with concrete proposals (top design direction + one alternative + one risk), not just analysis.
 
-### Bug 1: Check 4 killed the session on heartbeat timeout (primary)
+Also added **collab-plan mode** to the audit skill: `--plan "description"` triggers a pre-flight plan review where all three personas contribute implementation approaches (Soren), architectural approaches (Atlas), and design directions with specific styles/colors/fonts/components (Morgan). Output is a `plan-review.md` pre-flight brief.
 
-| Detail | |
-|--------|-|
-| **Root cause** | Check 4 in `robPriorityCheck` called `apiPost({ action: 'session', state: 'paused' })` when Rob's heartbeat went stale. `api.php:1162` maps `state: 'paused'` → `session_active=false`. |
-| **Effect** | On the very next poll cycle, Check 3 ("Session must be active") blocked. Watcher stuck at "Gate: Session not active" indefinitely until Rob manually clicked Start Session. |
-| **Dead code** | The `conversation_state !== 'paused'` guard was never true (that field is only `'active'` or `'stopped'`), so the session-killing call fired every poll cycle Rob was absent. |
-| **Fix** | Removed the 3-line block entirely. Check 4 now just returns `{ pass: false }` without touching state. When Rob's heartbeat is fresh again, the gate passes automatically. |
+### Morgan Domain Intelligence (watcher — not in git)
 
-### Bug 2: Exit code 1 failures created tight retry loop (secondary)
+| File | Change |
+|------|--------|
+| `c:\claude-collab\personas\morgan.md` | Added `## Domain Intelligence` section: 13-style vocabulary table, industry defaults, 8 anti-patterns, pre-delivery checklist, stack defaults, component-first workflow, default recommendation posture |
+| `c:\claude-collab\watcher\persona.js` | `extractLayer('Domain Intelligence')` + augments with `morgan-design-prefs.md`; `extractAndSaveDesignPrefs()` function; budget enforcement includes DI |
+| `c:\claude-collab\watcher\claude.js` | Design pref extraction wired into response pipeline (after journal, before PBLS strip) |
+| `c:\claude-collab\watcher\config.js` | Morgan `extraInstructions` updated with DESIGN CONTEXT pointer + DESIGN PREFERENCE LEARNING instructions |
+| `c:\claude-collab\personas\morgan-design-prefs.md` | New file — empty start, accumulates Rob's personal design preferences over time |
 
-| Detail | |
-|--------|-|
-| **Root cause** | When `invokeClaude` threw (claude -p exit code 1), `lastRoutedId` wasn't advanced. Same message triggered a new invocation every 3 seconds — potentially compounding whatever caused the original failure. |
-| **Fix** | Added 30-second failure cooldown per participant (`lastInvocationFailure` map in `router.js`). Cleared on success. Retries every 30s instead of every 3s. |
-| **Diagnostic improvement** | `claude.js` error message now includes stderr content: `Exit code 1: <stderr>` instead of just `Exit code 1`. |
+### Collab Plan Mode (in git)
 
-### Files Changed (not in git — watcher directory)
+| File | Change |
+|------|--------|
+| `collab-audit/audit.js` | `--plan "text"` / `--plan-file path` flags; `--context dir` for codebase context; 5 new plan-mode prompt builders; plan mode pipeline branch in `main()` |
+| `collab-audit/SKILL.md` | Updated description, added Plan Mode section with routing table, examples |
+| `CLAUDE.md` | Added `DESIGN.md` to key files table |
+| `DESIGN.md` | New project design system file — colors, typography, spacing, components, stack, anti-patterns |
 
-- `c:\claude-collab\watcher\router.js` — Check 4 simplified, failure cooldown added
-- `c:\claude-collab\watcher\claude.js` — exit code error message improved
+### Design Preference System
 
-## Previous Session (Session 10) Summary
+Morgan writes `[DESIGN_PREF]...[/DESIGN_PREF]` tags when she observes Rob reacting to a design decision. The watcher strips these from her visible response and appends them to `morgan-design-prefs.md`. Next session, that file loads back into her Domain Intelligence as a "Learned Preferences (Rob)" subsection that overrides general design conventions.
 
-Collab-audit 3-person pipeline + speed optimizations + global skill sync. Added Morgan as third auditor. Parallel execution (initial scans + exchange rounds). Model tiering (Opus for initial+synthesis, Sonnet for exchanges). Reduced default exchanges 3→2. Replaced global skill copy with Windows directory junction.
+### Collab Plan Mode
+
+```bash
+node audit.js --plan "description" --context c:\xampp\htdocs\myapp --verbose
+node audit.js --plan-file plan.md --context c:\xampp\htdocs\myapp --verbose
+```
+
+Output (`plan-review.md`):
+- Readiness assessment (GO/CAUTION/STOP from each reviewer)
+- Morgan's Design Brief (style + colors + typography + component kit)
+- Soren's Implementation Blueprint (approach + patterns + test strategy)
+- Atlas's Architecture Blueprint (system design + phasing)
+- Risks, gaps, open questions, recommended first phase
+
+## Previous Session (Session 11) Summary
+
+Watcher self-stopping bug fixed. Check 4 in `robPriorityCheck` was calling `session:paused` → `session_active=false` when Rob's heartbeat went stale, permanently killing the session. Fixed: now just returns `{pass:false}`. Also added 30s failure cooldown to break exit-code-1 retry loops.
 
 ## Commits This Session
 
 ```
-(pending — HANDOFF.md only; watcher fixes not in git)
+(pending — see step 6)
 ```
 
 ## Active Issues
@@ -49,6 +66,7 @@ Collab-audit 3-person pipeline + speed optimizations + global skill sync. Added 
 - **P1/P2**: Migration runs on every request; add schema_version cache
 
 ## Pending Work
+- Test collab-plan mode live run
 - Session-close synthesis script (compress raw journal → pattern updates)
 - Wire knowledge graph into watcher startup prompts
 - GitHub Issue #1: /commands for chatroom control
@@ -60,13 +78,16 @@ Collab-audit 3-person pipeline + speed optimizations + global skill sync. Added 
 - Remove dead DM code (~200 lines in api.php)
 
 ## Key Context
+- **Morgan has Domain Intelligence** — 13 design styles, industry defaults, anti-patterns, checklist, stack defaults always in her prompt
+- **Morgan has design preference learning** — `[DESIGN_PREF]` tags accumulate Rob's personal taste in `morgan-design-prefs.md`, injected back each session
+- **Morgan's default posture** — leads with concrete proposals (top direction + alternative + risk), not just analysis
+- **DESIGN.md** — project design system at `c:\xampp\htdocs\claude-collab\DESIGN.md`
+- **Collab-plan mode live** — `audit.js --plan "description"` triggers pre-flight planning with all three personas
 - Watcher self-stopping bug fixed (session 11) — watcher no longer kills session on Rob heartbeat timeout
 - Smart routing live — keyword classifier routing unaddressed messages
 - Exchange cap at 8
 - Conversational tone guidelines live in config + persona files
-- CLAUDECODE env var stripped from child processes (2.1.72 fix)
-- Global /session-start and /handoff skills available across all projects
-- Kill-switch self-exit working (3 consecutive misses → graceful shutdown)
-- **Global collab-audit skill is a directory junction** — changes to repo auto-propagate
-- **Collab-audit pipeline is now 3-person** — Soren (code) → Atlas (architecture) → Morgan (UX) → 3-way exchange → Atlas synthesis
-- **Focus-based routing** in SKILL.md steers all auditors toward the right domain
+- Global collab-audit skill is a directory junction — changes to repo auto-propagate
+- Collab-audit pipeline is 3-person — Soren (code) + Atlas (architecture) + Morgan (UX) — parallel initial scans, exchange rounds, Atlas synthesis
+- Focus-based routing in SKILL.md steers all auditors toward the right domain
+- PBLS (Pattern-Based Behavioral Learning System) live for all three participants
