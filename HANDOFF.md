@@ -1,68 +1,58 @@
-# Handoff -- 2026-03-10 (Session 8)
+# Handoff -- 2026-03-11 (Session 9)
 
 ## What Happened This Session
 
 ### Summary
-**Pattern-Based Behavioral Learning System (PBLS)** — collaboratively designed by Soren, Atlas, and Morgan, then implemented. Two-track system (knowledge patterns + trust-calibration patterns) with SM-2 adaptive intervals, RAG-style relevance matching, Gollwitzer if-then format, and CBT-inspired graduated exposure. Also fixed UTF-8 encoding (em-dash corruption), @team mention regex, and room-scoped typing indicator.
+**Watcher hardening + smart routing + conversational tone overhaul.** Fixed orphaned process cleanup, implemented TCP port singleton lock verification, built keyword-based smart routing (Morgan/Atlas/Soren fallback), raised exchange cap to 8, overhauled AI conversational style with team input, created global /session-start and /handoff skills, updated Claude Code to 2.1.72, fixed CLAUDECODE env var blocking child processes, and updated all Ellison/collab-audit references to include Morgan.
 
-### PBLS Architecture -- watcher/patterns.js + persona.js + claude.js (not in git)
+### Watcher Fixes (not in git)
 
-**Problem**: AI participants could articulate behavioral principles but still violated them. Journal entries captured reflection but didn't reliably translate to behavior change. Learning was shallow pattern-matching from recent context, not durable improvement.
+| Fix | Files |
+|-----|-------|
+| Orphaned process cleanup | `process-lock.js` — `resetAllStatuses()` on startup + graceful exit kills children + resets statuses |
+| Kill-switch self-exit | `watcher.js` — 3 consecutive misses → graceful exit (prevents zombie watchers) |
+| TCP port singleton verified | `process-lock.js` — port 47832, already implemented, confirmed working |
+| CLAUDECODE env var fix | `claude.js` — strip `CLAUDECODE` from child process env (Claude Code 2.1.72 nested-session guard) |
 
-**Solution**: Two-track pattern system designed collaboratively by the team:
+### Smart Routing (not in git)
 
 | Component | Implementation |
 |-----------|---------------|
-| Track 1: Knowledge | Failures where you didn't see the pattern (Soren's wrong file paths, Atlas's unverified claims) |
-| Track 2: Trust-Calibration | Execution-gap failures where you know the rule (Morgan's posting after stop signals) |
-| Pattern format | Gollwitzer if-then conditionals with triggers, actions, counterfactuals, evidence |
-| Relevance matching | RAG-style: patterns match against Rob's message keywords, only inject relevant patterns |
-| Interval scheduling | SM-2 adaptive: clean execution expands interval (1→3→7→18), violation resets to 1 |
-| Conflict resolution | Track 2 overrides Track 1; within track, more cross-context patterns take priority |
-| Gate failure logging | didnt_see / saw_dismissed / saw_overrode with mandatory reason field |
-| Trust calibration | Graduated exposure: high_support → medium → low → independent |
-| Auto-promotion | 10 clean sessions → internalized, 30 → archived, violation resets |
-| Pattern injection | After trait activation, before narrative identity (high attention zone) |
-| Post-response extraction | [PATTERN_VIOLATED], [PATTERN_EXECUTED], [BEHAVIORAL_EXPERIMENT] tags parsed automatically |
+| Message classifier | `router.js` — `classifyMessage(content)` scans keywords, priority order: Morgan → Atlas → Soren fallback |
+| Morgan keywords | user, users, ux, experience, interface, workflow, friction, feel, feels, design, feedback, onboarding, human |
+| Atlas keywords | architecture, system, structure, infrastructure, pattern, diagnostic, "why is", "what's happening", "how does", etc. |
+| Completion detection | Fixed — checks ANY AI participant responded (was hardcoded to Soren only) |
+| Fallback routing | If classified target busy/already triggered, falls to Soren |
+| Exchange cap | Raised to 8 (was 6) |
+| Config | `ROUTING_KEYWORDS`, `ROUTING_FALLBACK` in config.js |
 
-**Storage**: `C:\claude-collab\patterns\` with personal/{name}/, shared/, contributed/, library/ subdirectories.
+### Conversational Tone Overhaul (not in git)
 
-**Seed patterns created**: verify-before-citing (Soren), detect-applicable-rules (Atlas), silence-after-stop (Morgan), claim-completion-without-verification (shared), question-means-answer (Rob-contributed).
+Updated `extraInstructions` and `voiceDirective` for all 4 participants in config.js. Added "Conversational tone" sections to persona files (soren.md, atlas.md, morgan.md). Team discussed and agreed on changes, Ellison identified "defensive preemption" pattern. Tested live — dramatic improvement in naturalness.
 
-### Design Process
+### Global Skills (not in git)
 
-Team discussion spanned ~20 messages with each participant providing:
-- **Soren**: SM-2 spaced repetition adaptation, Gollwitzer implementation intentions (if-then format), gate failure granularity (saw_dismissed vs saw_overrode)
-- **Atlas**: RAG relevance matching, MemGPT-inspired promotion by cross-context recurrence, pattern conflict resolution protocol, code-review-checklist hard gates
-- **Morgan**: Two-track architecture (knowledge vs execution-gap), CBT exposure/response prevention, trust calibration with behavioral experiments and graduated exposure, mandatory prediction logging
+Created generic `/session-start` and `/handoff` skills at `~/.claude/skills/`. Removed project-level duplicates from Deadwire and Stompers (they now fall through to global). Claude-Collab and AI-TA keep project-level overrides.
 
-### UTF-8 Encoding Fix -- api.php (commit 745d1bc)
+### Morgan Inclusion Updates (in git)
 
-Added `ensureUtf8()` function to convert Windows-1252 → UTF-8 before storing. Applied to all content ingestion points (post, DM, room_message). Fixes em-dash (—) showing as replacement character (�).
+- Collab-audit SKILL.md, README.md, audit.js — all references updated from "Soren and Atlas" to include Morgan
+- Global collab-audit skill synced
+- Ellison persona (ellison.md) — all references updated to include Morgan
+- Ellison config (config.js) — defaultJournalFallback updated
 
-### Other Fixes -- index.html + style.css (commit 745d1bc)
+### Other
 
-- MENTION_REGEX now includes @team (was only @all)
-- Typing indicator scoped to room members when in private room
-- Rob message timestamp and mention colors fixed in light theme
+- Updated Claude Code from 2.1.34 to 2.1.72
 
-### Watcher Changes (not in git)
+## Previous Session (Session 8) Summary
 
-| File | Change |
-|------|--------|
-| `c:\claude-collab\watcher\patterns.js` | NEW — pattern loader, matcher, formatter, evidence updater, SM-2 intervals |
-| `c:\claude-collab\watcher\persona.js` | PBLS integration: load patterns, match context, inject block; pattern reporting instructions |
-| `c:\claude-collab\watcher\claude.js` | PBLS extraction: strip pattern tags, parse violations/executions/experiments, update evidence; WebFetch/WebSearch in tool allowlist |
-| `c:\claude-collab\watcher\router.js` | Pass sessionCount to buildPrompt for SM-2 interval calculation |
-
-## Previous Session (Session 7) Summary
-
-Stop signal detection (Check 5.5), file path hardcoding in prompts, infinite re-invocation fix, stop detection race condition fix, false positive prevention, room routing loop fix. Managed chatroom as Rob's proxy.
+PBLS (Pattern-Based Behavioral Learning System) — two-track knowledge + trust-calibration patterns, SM-2 intervals, RAG matching, Gollwitzer format. UTF-8 encoding fix, @team mentions, room typing indicator.
 
 ## Commits This Session
 
 ```
-745d1bc Fix UTF-8 encoding, @team mentions, room typing indicator, session 7 handoff
+(pending — collab-audit Morgan inclusion)
 ```
 
 ## Active Issues
@@ -86,11 +76,13 @@ Stop signal detection (Check 5.5), file path hardcoding in prompts, infinite re-
 - Serve participant list from API (single source of truth)
 - Combine 3 poll endpoints into single `?action=poll`
 - Remove dead DM code (~200 lines in api.php)
-- Add watcher self-exit on prolonged kill-switch removal
+- Add Morgan to collab-audit pipeline (currently docs only — audit.js still Soren+Atlas exchange)
 
 ## Key Context
-- PBLS is live — patterns injecting into prompts, evidence updating automatically
-- Watcher running as new PID (post-PBLS restart)
-- Exchange cap temporarily set to 20 (was 6) for extended team discussion
-- All 3 participants confirmed seeing pattern injection and understanding the system
-- SM-2 intervals already updating (Atlas's detect-applicable-rules at interval=3, clean_streak=2)
+- Watcher PID 18092, TCP port lock on 47832
+- Smart routing live — keyword classifier routing unaddressed messages
+- Exchange cap at 8
+- Conversational tone guidelines live in config + persona files
+- CLAUDECODE env var stripped from child processes (2.1.72 fix)
+- Global /session-start and /handoff skills available across all projects
+- Kill-switch self-exit working (3 consecutive misses → graceful shutdown)

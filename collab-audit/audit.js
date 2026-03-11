@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Collab Audit — Collaborative codebase audit using Soren and Atlas personas.
+ * Collab Audit — Collaborative codebase audit using Soren, Atlas, and Morgan personas.
  *
  * Usage:
  *   node c:\xampp\htdocs\claude-collab\collab-audit\audit.js <target-directory> [--focus areas] [--model opus] [--output path]
@@ -313,7 +313,7 @@ Write the report in this exact structure:
 [Structural patterns, coupling analysis, broader concerns]
 
 ## Disagreements & Resolutions
-[Any findings where Soren and Atlas disagreed, what evidence was presented, and the outcome]
+[Any findings where participants disagreed, what evidence was presented, and the outcome]
 
 ## Recommended Action Plan
 [Ordered list of what to fix first and why, estimated effort for each]
@@ -365,7 +365,7 @@ Produce the definitive audit report from the consolidated findings above. Use th
 [Structural patterns, coupling analysis, broader concerns]
 
 ## Disagreements & Resolutions
-[Any findings where Soren and Atlas disagreed, what evidence was presented, and the outcome]
+[Any findings where participants disagreed, what evidence was presented, and the outcome]
 
 ## Recommended Action Plan
 [Ordered list of what to fix first and why, estimated effort for each]

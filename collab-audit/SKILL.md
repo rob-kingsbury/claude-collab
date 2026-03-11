@@ -1,12 +1,12 @@
 ---
 name: collab-audit
-description: "Run a collaborative codebase audit using Soren and Atlas (two AI personas with persistent identities). Use when the user wants a thorough code review, security audit, performance analysis, or architecture review of a project. Invoke with /collab-audit or when the user asks for a 'collab audit', 'Soren and Atlas audit', or similar."
+description: "Run a collaborative codebase audit using Soren, Atlas, and Morgan (AI personas with persistent identities). Use when the user wants a thorough code review, security audit, performance analysis, or architecture review of a project. Invoke with /collab-audit or when the user asks for a 'collab audit', 'team audit', or similar."
 disable-model-invocation: true
 ---
 
 # Collab Audit — Collaborative Codebase Analysis
 
-Run a collaborative multi-round codebase audit using Soren and Atlas, two AI personas with persistent identities maintained via the Claude Collab system.
+Run a collaborative multi-round codebase audit using Soren, Atlas, and Morgan — AI personas with persistent identities maintained via the Claude Collab system.
 
 ## What This Does
 
@@ -16,7 +16,7 @@ This skill invokes a Node.js script (`c:\xampp\htdocs\claude-collab\collab-audit
 
 2. **Phase 2 — Atlas** (initial review): Receives Soren's findings, verifies them by reading the actual files, pushes back on false positives, adds architectural observations, and raises issues Soren missed.
 
-3. **Phase 3 — Collaborative Exchange** (configurable, default 3 rounds): Soren and Atlas take turns responding to each other. They challenge findings, defend with evidence, refine severity ratings, and converge on the strongest analysis. Each has full tool access to verify claims during the exchange.
+3. **Phase 3 — Collaborative Exchange** (configurable, default 3 rounds): Participants take turns responding to each other. They challenge findings, defend with evidence, refine severity ratings, and converge on the strongest analysis. Each has full tool access to verify claims during the exchange.
 
 4. **Phase 4 — Synthesis**: Atlas produces the final report incorporating all verified findings, noting agreements, disagreements, and resolutions.
 
@@ -31,7 +31,7 @@ Each invocation loads the participant's three-layer persona from `c:\claude-coll
 - **Layer 3 — Behavioral Examples**: Few-shot demonstrations (shed if token budget is tight)
 - **Bookend**: Layer 1 repeated at prompt end for attention decay mitigation
 
-This means Soren and Atlas bring their established perspectives and analytical styles to the audit — they aren't generic code reviewers.
+This means participants bring their established perspectives and analytical styles to the audit — they aren't generic code reviewers. Soren focuses on code-level precision, Atlas on structural integrity, and Morgan on UX/product implications.
 
 ### Tool Access
 Both participants are invoked with `--tools 'Bash,Read,Glob,Grep,Task'` and `--dangerously-skip-permissions`, so they can explore the codebase thoroughly. They read real files, cite real line numbers, and can spawn subagents (Task tool) to parallelize analysis across multiple files or directories.
@@ -93,7 +93,7 @@ If the project has a `c:\xampp\htdocs\claude-collab\collab-audit\logs\` director
 User: "Run a collab audit on this project"
 → node "c:\xampp\htdocs\claude-collab\collab-audit\audit.js" "C:\xampp\htdocs\current-project" --verbose
 
-User: "Have Soren and Atlas check this for security issues"
+User: "Have the team check this for security issues"
 → node "c:\xampp\htdocs\claude-collab\collab-audit\audit.js" "C:\xampp\htdocs\current-project" --focus "security" --verbose
 
 User: "/collab-audit c:\xampp\htdocs\ai-ta"
@@ -108,6 +108,7 @@ User: "Quick audit, just Soren's pass"
 The canonical audit script lives at `c:\xampp\htdocs\claude-collab\collab-audit\audit.js` (version controlled in the claude-collab git repo). Personas are stored at:
 - `c:\claude-collab\personas\soren.md` + `soren-journal.md`
 - `c:\claude-collab\personas\atlas.md` + `atlas-journal.md`
+- `c:\claude-collab\personas\morgan.md` + `morgan-journal.md`
 
 Full documentation: `c:\xampp\htdocs\claude-collab\collab-audit\README.md`
 Source repo: `c:\xampp\htdocs\claude-collab` (subfolder `collab-audit/`)

@@ -1,6 +1,6 @@
 # Collab Audit
 
-Collaborative codebase auditing using Soren and Atlas — two AI personas with persistent identities from the Claude Collab system.
+Collaborative codebase auditing using Soren, Atlas, and Morgan — AI personas with persistent identities from the Claude Collab system.
 
 ## Overview
 
@@ -33,7 +33,7 @@ Each invocation loads the participant's three-layer persona:
 └─────────────────────────────────┘
 ```
 
-Personas live at `c:\claude-collab\personas\` and are maintained by the Claude Collab watcher system. Soren and Atlas bring distinct analytical perspectives shaped by accumulated session experience.
+Personas live at `c:\claude-collab\personas\` and are maintained by the Claude Collab watcher system. Soren, Atlas, and Morgan bring distinct analytical perspectives shaped by accumulated session experience.
 
 ### Pipeline
 
@@ -120,7 +120,7 @@ This ensures you always get a usable output, even if the final synthesis invocat
 
 Or just ask naturally:
 - "Run a collab audit on this project"
-- "Have Soren and Atlas review this codebase"
+- "Have the team review this codebase"
 - "Security audit with the collab team"
 
 The skill is installed globally at `~/.claude/skills/collab-audit/SKILL.md`.
