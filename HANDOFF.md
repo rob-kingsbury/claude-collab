@@ -1,63 +1,40 @@
-# Handoff -- 2026-03-11 (Session 10)
+# Handoff -- 2026-03-11 (Session 11)
 
 ## What Happened This Session
 
 ### Summary
-**Collab-audit 3-person pipeline + speed optimizations + global skill sync.** Added Morgan as third auditor in `audit.js` (Phase 3: UX/product review, 3-way exchange rotation). Implemented parallel execution (initial scans + exchange rounds run concurrently), model tiering (Opus for initial+synthesis, Sonnet for exchanges), reduced default exchanges from 3 to 2. Replaced global skill copy with Windows directory junction to repo. Added focus-based routing table to SKILL.md. Updated all docs.
+**Watcher self-stopping bug fixed.** Two bugs in `router.js` / `claude.js` caused the watcher to stop routing after Rob went inactive, requiring a manual session restart each time.
 
-### Collab-Audit: Morgan Added to Pipeline (in git)
+### Bug 1: Check 4 killed the session on heartbeat timeout (primary)
 
-| Change | Detail |
-|--------|--------|
-| Morgan initial review | New `buildMorganReviewPrompt()` + `buildMorganIndependentPrompt()` — UX vulnerabilities, user-facing impact, product logic gaps, developer experience |
-| 3-way exchange | Exchange loop now rotates Soren → Atlas → Morgan each round (was Soren → Atlas) |
-| Synthesis updated | Report includes "UX & Product Concerns" section, credits all 3 auditors |
-| Invocation count | 10 default (was 9): 3 initial + 6 exchange turns + synthesis |
-| Graceful degradation | If Morgan persona missing, falls back to 2-person pipeline automatically |
-| Condensed + fallback reports | Updated to credit all 3 auditors |
+| Detail | |
+|--------|-|
+| **Root cause** | Check 4 in `robPriorityCheck` called `apiPost({ action: 'session', state: 'paused' })` when Rob's heartbeat went stale. `api.php:1162` maps `state: 'paused'` → `session_active=false`. |
+| **Effect** | On the very next poll cycle, Check 3 ("Session must be active") blocked. Watcher stuck at "Gate: Session not active" indefinitely until Rob manually clicked Start Session. |
+| **Dead code** | The `conversation_state !== 'paused'` guard was never true (that field is only `'active'` or `'stopped'`), so the session-killing call fired every poll cycle Rob was absent. |
+| **Fix** | Removed the 3-line block entirely. Check 4 now just returns `{ pass: false }` without touching state. When Rob's heartbeat is fresh again, the gate passes automatically. |
 
-### Collab-Audit: Speed Optimizations (in git)
+### Bug 2: Exit code 1 failures created tight retry loop (secondary)
 
-| Change | Detail |
-|--------|--------|
-| Parallel initial scans | All 3 auditors scan codebase simultaneously via `Promise.all()`. New `buildAtlasIndependentPrompt()` + `buildMorganIndependentPrompt()` for when they don't see each other's findings. |
-| Parallel exchange rounds | All 3 respond to same prior-round snapshot simultaneously. Results appended in deterministic order. |
-| Model tiering | Opus for initial scans + synthesis, Sonnet for exchange rounds. New `--exchange-model` flag. |
-| Default exchanges reduced | 3 → 2 rounds. Most value in rounds 1-2; round 3 is usually convergence confirmation. |
-| `--sequential` flag | Disables parallelism, restores original pipeline where each phase sees prior findings |
-| Timing improvement | ~30-40 min → ~8-15 min (parallel + Sonnet exchanges + 2 rounds) |
-| Bug fixes | Fixed `let` declaration bug (only `morganReview` initialized), dynamic `totalInvocations` based on actual participant count, removed hardcoded exchange count and model name from prompts |
+| Detail | |
+|--------|-|
+| **Root cause** | When `invokeClaude` threw (claude -p exit code 1), `lastRoutedId` wasn't advanced. Same message triggered a new invocation every 3 seconds — potentially compounding whatever caused the original failure. |
+| **Fix** | Added 30-second failure cooldown per participant (`lastInvocationFailure` map in `router.js`). Cleared on success. Retries every 30s instead of every 3s. |
+| **Diagnostic improvement** | `claude.js` error message now includes stderr content: `Exit code 1: <stderr>` instead of just `Exit code 1`. |
 
-### Global Skill: Directory Junction (not in git — filesystem config)
+### Files Changed (not in git — watcher directory)
 
-| Change | Detail |
-|--------|--------|
-| Replaced static copy | `~/.claude/skills/collab-audit/` is now a Windows directory junction to `c:\xampp\htdocs\claude-collab\collab-audit\` |
-| Effect | Any change committed to the repo is instantly live in the global skill — zero maintenance |
-| Previous state | Was a manually-synced copy of SKILL.md only (no audit.js, no README) |
+- `c:\claude-collab\watcher\router.js` — Check 4 simplified, failure cooldown added
+- `c:\claude-collab\watcher\claude.js` — exit code error message improved
 
-### Focus-Based Routing (in git)
+## Previous Session (Session 10) Summary
 
-| Change | Detail |
-|--------|--------|
-| SKILL.md routing table | Maps user intent to `--focus` flags: UX, security, performance, architecture, code quality, full |
-| User language mapping | Natural language → focus flag translation guide for invoking Claude |
-| Rationale | `--focus` steers ALL three auditors simultaneously — more effective than reordering pipeline |
-
-### Docs Updated (in git)
-
-- `collab-audit/README.md` — complete rewrite: 5-phase pipeline diagram, 3-person descriptions, focus routing table, updated timing/invocations, junction note
-- `collab-audit/SKILL.md` — 5-phase descriptions, 3-person tool access, routing table, updated invocation counts
-- `collab-audit/audit.js` — help text updated ("Soren, Atlas & Morgan")
-
-## Previous Session (Session 9) Summary
-
-Watcher hardening + smart routing + conversational tone overhaul. Fixed orphaned process cleanup, TCP port singleton lock, keyword-based smart routing (Morgan/Atlas/Soren fallback), exchange cap to 8, conversational style overhaul, global /session-start and /handoff skills, Claude Code 2.1.72, CLAUDECODE env var fix, Morgan inclusion in collab-audit docs + Ellison references.
+Collab-audit 3-person pipeline + speed optimizations + global skill sync. Added Morgan as third auditor. Parallel execution (initial scans + exchange rounds). Model tiering (Opus for initial+synthesis, Sonnet for exchanges). Reduced default exchanges 3→2. Replaced global skill copy with Windows directory junction.
 
 ## Commits This Session
 
 ```
-(pending — collab-audit Morgan pipeline + docs)
+(pending — HANDOFF.md only; watcher fixes not in git)
 ```
 
 ## Active Issues
@@ -83,7 +60,7 @@ Watcher hardening + smart routing + conversational tone overhaul. Fixed orphaned
 - Remove dead DM code (~200 lines in api.php)
 
 ## Key Context
-- Watcher PID 18092, TCP port lock on 47832
+- Watcher self-stopping bug fixed (session 11) — watcher no longer kills session on Rob heartbeat timeout
 - Smart routing live — keyword classifier routing unaddressed messages
 - Exchange cap at 8
 - Conversational tone guidelines live in config + persona files
