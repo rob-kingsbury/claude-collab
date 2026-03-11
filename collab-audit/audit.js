@@ -40,7 +40,7 @@ function parseArgs() {
     const args = process.argv.slice(2);
     if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
         console.log(`
-Collab Audit — Collaborative codebase analysis with Soren & Atlas
+Collab Audit — Collaborative codebase analysis with Soren, Atlas & Morgan
 
 Usage:
   node audit.js <target-directory> [options]
@@ -225,13 +225,60 @@ Be direct and substantive. Don't just agree — your value is in challenging and
 ${personaBookend(persona)}`;
 }
 
-function buildExchangePrompt(persona, name, otherName, targetDir, conversationHistory, roundNum, totalRounds, focus) {
+function buildMorganReviewPrompt(persona, targetDir, sorenFindings, atlasReview, focus) {
+    const focusSection = focus
+        ? `\nFOCUS AREAS (prioritize these): ${focus}\n`
+        : '';
+
+    return `${personaHeader(persona)}You are Morgan, performing Phase 3 of a collaborative codebase audit with Soren and Atlas. They've completed their initial code-level and structural analyses (below). You have full tool access — use it to examine the codebase from your perspective.
+
+After your review, all three of you will have several rounds of collaborative exchange to challenge each other, refine findings, and converge. So be direct — add what they missed and push back where you disagree.
+
+TARGET DIRECTORY: ${targetDir}
+${focusSection}
+SOREN'S FINDINGS (code-level):
+${sorenFindings}
+
+ATLAS'S REVIEW (structural):
+${atlasReview}
+
+YOUR TASK:
+Bring your UX/product lens to this audit. Soren and Atlas are thorough on code and architecture — your job is what they miss:
+
+1. **User-Facing Impact** — Which of their findings actually affect users? Re-prioritize severity based on user impact, not just code correctness. A "LOW" code smell that causes user confusion is higher priority than a "MEDIUM" internal refactor.
+2. **UX Vulnerabilities** — Issues the code creates for humans using the software:
+   - Confusing error messages or silent failures that leave users stranded
+   - Missing loading states, feedback, or confirmation flows
+   - Accessibility gaps (missing ARIA, keyboard nav, screen reader issues)
+   - Inconsistent behavior that breaks user mental models
+   - Race conditions or timing issues that surface as UI glitches
+3. **Product Logic Gaps** — Business logic that doesn't match what a user would expect:
+   - Edge cases in user workflows (empty states, first-run experience, error recovery)
+   - Data validation that's too strict or too loose from a user perspective
+   - Missing affordances or unclear interaction patterns
+4. **Developer Experience** — How the code treats the next human who touches it:
+   - Misleading naming that will cause bugs when someone new maintains this
+   - Implicit assumptions that aren't documented at system boundaries
+   - Configuration or setup that will confuse new contributors
+
+For each finding:
+- State the file path and line number(s)
+- Describe the user/product impact concisely
+- Rate severity: CRITICAL / HIGH / MEDIUM / LOW (from a product perspective)
+- Suggest a fix (brief)
+
+Don't duplicate what Soren and Atlas already found — reference their findings by description when you agree, and focus your output on what they missed or misjudged.
+${personaBookend(persona)}`;
+}
+
+function buildExchangePrompt(persona, name, otherNames, targetDir, conversationHistory, roundNum, totalRounds, focus) {
     const focusSection = focus
         ? `\nFOCUS AREAS: ${focus}\n`
         : '';
     const isFinalRound = roundNum === totalRounds;
+    const othersStr = otherNames.join(' and ');
 
-    return `${personaHeader(persona)}You are ${name}, in round ${roundNum} of ${totalRounds} of a collaborative codebase audit with ${otherName}. You have full tool access — use it to verify claims, check code, and support your arguments with evidence.
+    return `${personaHeader(persona)}You are ${name}, in round ${roundNum} of ${totalRounds} of a collaborative codebase audit with ${othersStr}. You have full tool access — use it to verify claims, check code, and support your arguments with evidence.
 
 TARGET DIRECTORY: ${targetDir}
 ${focusSection}
@@ -243,7 +290,7 @@ ${isFinalRound ? `This is the FINAL exchange round. Produce a consolidated findi
 
 Structure your response as:
 
-### Confirmed Findings (both agree)
+### Confirmed Findings (all agree)
 [Number each finding. file:line, severity, one-line description. Do NOT re-explain — just list.]
 
 ### Revised Findings (severity or description changed)
@@ -264,9 +311,9 @@ Structure your response as:
 ### New Findings (full detail: file:line, severity, description, fix)
 
 Rules:
-- Do NOT re-litigate findings already confirmed by both parties — just reference them
-- If ${otherName} flagged a false positive, either defend with NEW evidence or concede
-- If ${otherName} raised new issues, verify them — read the code and confirm or challenge
+- Do NOT re-litigate findings already confirmed by the team — just reference them
+- If another auditor flagged a false positive, either defend with NEW evidence or concede
+- If another auditor raised new issues, verify them — read the code and confirm or challenge
 - Mark each disputed point as CONFIRMED, RETRACTED, or REVISED with a one-line rationale
 - Use your tools to verify claims before accepting or rejecting them`}
 
@@ -279,7 +326,7 @@ function buildSynthesisPrompt(persona, targetDir, conversationHistory, focus) {
         ? `\nFOCUS AREAS: ${focus}\n`
         : '';
 
-    return `${personaHeader(persona)}You are Atlas, producing the final synthesis of a collaborative codebase audit. You and Soren have completed multiple rounds of exchange — challenging each other's findings, verifying code, and converging on the best analysis. You have tool access for any final verification.
+    return `${personaHeader(persona)}You are Atlas, producing the final synthesis of a collaborative codebase audit. You, Soren, and Morgan have completed multiple rounds of exchange — challenging each other's findings, verifying code, and converging on the best analysis. You have tool access for any final verification.
 
 TARGET DIRECTORY: ${targetDir}
 ${focusSection}
@@ -287,27 +334,30 @@ FULL AUDIT CONVERSATION:
 ${conversationHistory}
 
 YOUR TASK:
-Produce the definitive audit report. Incorporate all verified findings from both participants. Note where you and Soren agreed, where you disagreed, and the resolution.
+Produce the definitive audit report. Incorporate all verified findings from all three participants. Note where the team agreed, where you disagreed, and the resolution. Give proper weight to Morgan's UX/product findings — user-facing issues deserve prominence even if the code is technically correct.
 
 Write the report in this exact structure:
 
 # Codebase Audit Report
 **Target**: ${targetDir}
 **Date**: ${new Date().toISOString().split('T')[0]}
-**Auditors**: Soren (code analysis) + Atlas (structural review & synthesis)
+**Auditors**: Soren (code analysis) + Atlas (structural review & synthesis) + Morgan (UX/product)
 **Method**: ${DEFAULT_EXCHANGES}-round collaborative exchange with mutual verification
 
 ## Executive Summary
 [2-3 sentences: overall health, critical issues count, top recommendation]
 
 ## Critical & High Severity
-[Each finding with file:line, description, suggested fix, and whether both auditors agreed]
+[Each finding with file:line, description, suggested fix, and whether the team agreed]
 
 ## Medium Severity
 [Same format]
 
 ## Low Severity & Suggestions
 [Same format]
+
+## UX & Product Concerns
+[Morgan's user-facing findings that don't fit neatly into severity buckets — accessibility, workflow gaps, user confusion points]
 
 ## Architectural Observations
 [Structural patterns, coupling analysis, broader concerns]
@@ -319,7 +369,7 @@ Write the report in this exact structure:
 [Ordered list of what to fix first and why, estimated effort for each]
 
 ---
-*Generated by Collab Audit (Soren + Atlas) — ${DEFAULT_EXCHANGES}-round collaborative exchange using Claude Opus 4.6 with extended thinking*
+*Generated by Collab Audit (Soren + Atlas + Morgan) — ${DEFAULT_EXCHANGES}-round collaborative exchange using Claude Opus 4.6 with extended thinking*
 ${personaBookend(persona)}`;
 }
 
@@ -333,7 +383,7 @@ function buildCondensedSynthesisPrompt(persona, targetDir, conversationHistory, 
     const lastTwo = sections.slice(-2).map(s => s.trim() ? '=== ' + s : s);
     const condensed = lastTwo.join('\n');
 
-    return `${personaHeader(persona)}You are Atlas, producing the final synthesis of a collaborative codebase audit. The full exchange was too long for a single synthesis pass, so you're working from the final exchange round where findings were consolidated.
+    return `${personaHeader(persona)}You are Atlas, producing the final synthesis of a collaborative codebase audit with Soren and Morgan. The full exchange was too long for a single synthesis pass, so you're working from the final exchange round where findings were consolidated.
 
 TARGET DIRECTORY: ${targetDir}
 ${focusSection}
@@ -341,25 +391,28 @@ FINAL EXCHANGE ROUND (findings should be consolidated here):
 ${condensed}
 
 YOUR TASK:
-Produce the definitive audit report from the consolidated findings above. Use this exact structure:
+Produce the definitive audit report from the consolidated findings above. Give proper weight to Morgan's UX/product findings. Use this exact structure:
 
 # Codebase Audit Report
 **Target**: ${targetDir}
 **Date**: ${new Date().toISOString().split('T')[0]}
-**Auditors**: Soren (code analysis) + Atlas (structural review & synthesis)
+**Auditors**: Soren (code analysis) + Atlas (structural review & synthesis) + Morgan (UX/product)
 **Method**: Multi-round collaborative exchange with mutual verification
 
 ## Executive Summary
 [2-3 sentences: overall health, critical issues count, top recommendation]
 
 ## Critical & High Severity
-[Each finding with file:line, description, suggested fix, and whether both auditors agreed]
+[Each finding with file:line, description, suggested fix, and whether the team agreed]
 
 ## Medium Severity
 [Same format]
 
 ## Low Severity & Suggestions
 [Same format]
+
+## UX & Product Concerns
+[Morgan's user-facing findings — accessibility, workflow gaps, user confusion points]
 
 ## Architectural Observations
 [Structural patterns, coupling analysis, broader concerns]
@@ -371,7 +424,7 @@ Produce the definitive audit report from the consolidated findings above. Use th
 [Ordered list of what to fix first and why, estimated effort for each]
 
 ---
-*Generated by Collab Audit (Soren + Atlas) — collaborative exchange using Claude Opus 4.6 with extended thinking*
+*Generated by Collab Audit (Soren + Atlas + Morgan) — collaborative exchange using Claude Opus 4.6 with extended thinking*
 ${personaBookend(persona)}`;
 }
 
@@ -392,7 +445,7 @@ function buildFallbackReport(targetDir, conversationHistory, focus) {
     return `# Codebase Audit Report (auto-generated fallback)
 **Target**: ${targetDir}
 **Date**: ${date}
-**Auditors**: Soren (code analysis) + Atlas (structural review & synthesis)
+**Auditors**: Soren (code analysis) + Atlas (structural review & synthesis) + Morgan (UX/product)
 **Method**: Multi-round collaborative exchange (synthesis phase failed — this is an auto-generated summary)
 ${focus ? `**Focus**: ${focus}\n` : ''}
 ## Note
@@ -405,7 +458,7 @@ Review the exchange log for the actual findings — the final exchange round typ
 ${conversationHistory}
 
 ---
-*Generated by Collab Audit (Soren + Atlas) — synthesis failed, raw exchange preserved*
+*Generated by Collab Audit (Soren + Atlas + Morgan) — synthesis failed, raw exchange preserved*
 `;
 }
 
@@ -477,12 +530,13 @@ async function main() {
         process.exit(1);
     }
 
-    const totalInvocations = sorenOnly ? 1 : 2 + (exchanges * 2) + 1; // initial + review + exchanges + synthesis
+    const totalInvocations = sorenOnly ? 1 : 3 + (exchanges * 3) + 1; // 3 initial + 3-way exchanges + synthesis
     console.log(`\n=== Collab Audit ===`);
     console.log(`Target:     ${targetDir}`);
     console.log(`Model:      ${model}`);
     console.log(`Focus:      ${focus || '(all areas)'}`);
-    console.log(`Exchanges:  ${sorenOnly ? 'none (Soren only)' : exchanges + ' rounds'}`);
+    console.log(`Auditors:   Soren (code) + Atlas (architecture) + Morgan (UX/product)`);
+    console.log(`Exchanges:  ${sorenOnly ? 'none (Soren only)' : exchanges + ' rounds (3-way)'}`);
     console.log(`Phases:     ${totalInvocations} claude -p invocations`);
     console.log(`Output:     ${output}`);
     console.log();
@@ -542,26 +596,55 @@ async function main() {
         return;
     }
 
+    // Load Morgan persona
+    const morganPersona = loadPersona('morgan');
+    if (!morganPersona) {
+        console.log('Warning: Could not load Morgan persona — proceeding with Soren + Atlas only');
+    }
+
+    // === Phase 3: Morgan's UX/product review ===
+    let morganReview = '';
+    if (morganPersona) {
+        console.log('Phase 3: Morgan — UX/product review...');
+        const morganReviewPrompt = buildMorganReviewPrompt(morganPersona, targetDir, sorenFindings, atlasReview, focus);
+        if (verbose) console.log(`  Prompt: ${morganReviewPrompt.length} chars (${estimateTokens(morganReviewPrompt)} est. tokens)`);
+
+        try {
+            morganReview = await invokeClaude(morganReviewPrompt, targetDir, model, verbose);
+            console.log(`  Morgan complete (${morganReview.length} chars)`);
+        } catch (e) {
+            console.error(`  Morgan review failed: ${e.message}`);
+            console.log('  Continuing without Morgan\'s review...');
+        }
+    }
+
     // Build conversation history for exchanges
     let conversationHistory = `=== SOREN — Initial Analysis ===\n${sorenFindings}\n\n=== ATLAS — Initial Review ===\n${atlasReview}`;
+    if (morganReview) {
+        conversationHistory += `\n\n=== MORGAN — UX/Product Review ===\n${morganReview}`;
+    }
 
-    // === Phase 3: Collaborative exchange loop ===
-    // Each round: Soren responds, then Atlas responds
+    // === Phase 4: Collaborative exchange loop ===
+    // Each round: Soren, then Atlas, then Morgan
     const participants = [
-        { name: 'Soren', persona: sorenPersona, otherName: 'Atlas' },
-        { name: 'Atlas', persona: atlasPersona, otherName: 'Soren' }
+        { name: 'Soren', persona: sorenPersona, otherNames: morganPersona ? ['Atlas', 'Morgan'] : ['Atlas'] },
+        { name: 'Atlas', persona: atlasPersona, otherNames: morganPersona ? ['Soren', 'Morgan'] : ['Soren'] },
     ];
+    if (morganPersona) {
+        participants.push({ name: 'Morgan', persona: morganPersona, otherNames: ['Soren', 'Atlas'] });
+    }
 
     for (let round = 1; round <= exchanges; round++) {
         let breakOuter = false;
         for (const participant of participants) {
             const label = `Exchange ${round}/${exchanges}`;
-            console.log(`${label}: ${participant.name} responding to ${participant.otherName}...`);
+            const othersStr = participant.otherNames.join(' & ');
+            console.log(`${label}: ${participant.name} responding to ${othersStr}...`);
 
             const prompt = buildExchangePrompt(
                 participant.persona,
                 participant.name,
-                participant.otherName,
+                participant.otherNames,
                 targetDir,
                 conversationHistory,
                 round,
@@ -591,7 +674,7 @@ async function main() {
         if (breakOuter) break;
     }
 
-    // === Phase 4: Atlas produces final synthesized report ===
+    // === Phase 5: Atlas produces final synthesized report ===
     console.log('Synthesis: Atlas — producing final report...');
     const synthesisPrompt = buildSynthesisPrompt(atlasPersona, targetDir, conversationHistory, focus);
     if (verbose) console.log(`  Prompt: ${synthesisPrompt.length} chars (${estimateTokens(synthesisPrompt)} est. tokens)`);
@@ -621,7 +704,7 @@ async function main() {
     fs.writeFileSync(output, finalReport, 'utf-8');
     console.log(`\n=== Audit Complete ===`);
     console.log(`Report: ${output}`);
-    console.log(`Invocations used: initial + review + ${exchanges * 2} exchange turns + synthesis = ${totalInvocations}`);
+    console.log(`Invocations used: 3 initial + ${exchanges * 3} exchange turns + synthesis = ${totalInvocations}`);
 }
 
 main().catch(e => {

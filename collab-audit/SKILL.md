@@ -1,7 +1,7 @@
 ---
 name: collab-audit
 description: "Run a collaborative codebase audit using Soren, Atlas, and Morgan (AI personas with persistent identities). Use when the user wants a thorough code review, security audit, performance analysis, or architecture review of a project. Invoke with /collab-audit or when the user asks for a 'collab audit', 'team audit', or similar."
-disable-model-invocation: true
+disable-model-invocation: false
 ---
 
 # Collab Audit — Collaborative Codebase Analysis
@@ -16,11 +16,13 @@ This skill invokes a Node.js script (`c:\xampp\htdocs\claude-collab\collab-audit
 
 2. **Phase 2 — Atlas** (initial review): Receives Soren's findings, verifies them by reading the actual files, pushes back on false positives, adds architectural observations, and raises issues Soren missed.
 
-3. **Phase 3 — Collaborative Exchange** (configurable, default 3 rounds): Participants take turns responding to each other. They challenge findings, defend with evidence, refine severity ratings, and converge on the strongest analysis. Each has full tool access to verify claims during the exchange.
+3. **Phase 3 — Morgan** (UX/product review): Receives both Soren's and Atlas's findings, evaluates user-facing impact, identifies UX vulnerabilities (accessibility, missing feedback, confusing workflows), product logic gaps, and re-prioritizes severity based on human impact.
 
-4. **Phase 4 — Synthesis**: Atlas produces the final report incorporating all verified findings, noting agreements, disagreements, and resolutions.
+4. **Phase 4 — Collaborative Exchange** (configurable, default 3 rounds): All three participants take turns responding to each other. They challenge findings, defend with evidence, refine severity ratings, and converge on the strongest analysis. Each has full tool access to verify claims during the exchange.
 
-The output is a structured `audit-report.md` written to the target project directory. With 3 exchange rounds, this is 9 total `claude -p` invocations (initial + review + 6 exchange turns + synthesis).
+5. **Phase 5 — Synthesis**: Atlas produces the final report incorporating all verified findings from all three auditors, noting agreements, disagreements, and resolutions. Includes a dedicated UX & Product Concerns section.
+
+The output is a structured `audit-report.md` written to the target project directory. With 3 exchange rounds, this is 13 total `claude -p` invocations (3 initial + 9 exchange turns + synthesis).
 
 ## How It Works
 
@@ -34,7 +36,7 @@ Each invocation loads the participant's three-layer persona from `c:\claude-coll
 This means participants bring their established perspectives and analytical styles to the audit — they aren't generic code reviewers. Soren focuses on code-level precision, Atlas on structural integrity, and Morgan on UX/product implications.
 
 ### Tool Access
-Both participants are invoked with `--tools 'Bash,Read,Glob,Grep,Task'` and `--dangerously-skip-permissions`, so they can explore the codebase thoroughly. They read real files, cite real line numbers, and can spawn subagents (Task tool) to parallelize analysis across multiple files or directories.
+All three participants are invoked with `--tools 'Bash,Read,Glob,Grep,Task'` and `--dangerously-skip-permissions`, so they can explore the codebase thoroughly. They read real files, cite real line numbers, and can spawn subagents (Task tool) to parallelize analysis across multiple files or directories.
 
 ### Model
 Default: Opus 4.6 with extended thinking (maximum reasoning depth for audit quality).
@@ -50,10 +52,25 @@ Identify what the user wants audited:
 
 ### Step 2: Determine Focus Areas (Recommended)
 
-Extract focus areas from user intent — even if not explicitly stated:
-- User mentions specific concerns → use as focus (e.g., "check for SQL injection" → `--focus "security,sql-injection"`)
-- User describes a type of project → infer relevant focus (e.g., web app with auth → `--focus "security,auth,xss,csrf"`)
-- User gives no guidance → suggest 2-3 focus areas based on the project type, or run without focus for broad coverage
+Extract focus areas from user intent — even if not explicitly stated. The `--focus` flag steers ALL three auditors toward the same priority, so choosing the right focus is critical.
+
+**Focus routing by audit type:**
+
+| User intent | Focus flag | Effect |
+|-------------|-----------|--------|
+| UX/UI audit | `--focus "ux,accessibility,user-workflows,error-messaging"` | Soren hunts code that breaks UX, Atlas checks architecture impacts UX, Morgan leads UX analysis |
+| Security audit | `--focus "security,injection,auth,xss,csrf,path-traversal"` | Soren finds vulnerabilities, Atlas checks auth architecture, Morgan evaluates user-facing security (error leakage, confusing auth flows) |
+| Performance audit | `--focus "performance,queries,caching,rendering,memory"` | Soren finds bottlenecks, Atlas checks scaling patterns, Morgan flags user-perceived slowness |
+| Architecture review | `--focus "architecture,coupling,dependencies,patterns,modularity"` | Soren checks implementation consistency, Atlas leads structural analysis, Morgan evaluates developer experience |
+| Code quality | `--focus "code-quality,dead-code,duplication,naming,error-handling"` | Soren leads code-level sweep, Atlas checks pattern consistency, Morgan evaluates maintainability for future contributors |
+| Full audit | no `--focus` flag | Broad coverage across all domains — all three auditors use their full lens |
+
+**Mapping user language to focus:**
+- "check the UX" / "is this usable" / "accessibility" / "user experience" → UX focus
+- "is this secure" / "find vulnerabilities" / "pentest" → Security focus
+- "why is it slow" / "optimize" / "performance" → Performance focus
+- "review the architecture" / "is this well-structured" / "tech debt" → Architecture focus
+- "general audit" / "full review" / no specific ask → No focus (broad)
 
 **Tip**: Focused audits produce more actionable findings. For large codebases (100+ files), always recommend `--focus` to avoid spreading analysis too thin.
 
@@ -73,7 +90,7 @@ Options:
 - `--soren-only` — skip collaboration entirely (fast single pass)
 - `--verbose` — show real-time progress dots
 
-**Important**: With 3 exchange rounds (default), this runs 9 `claude -p` invocations with Opus extended thinking. Expect 10-20 minutes depending on codebase size. Inform the user of the expected duration.
+**Important**: With 3 exchange rounds (default), this runs 13 `claude -p` invocations with Opus extended thinking. Expect 15-30 minutes depending on codebase size. Inform the user of the expected duration.
 
 ### Step 4: Present Results
 
