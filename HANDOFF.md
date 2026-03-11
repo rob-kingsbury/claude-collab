@@ -1,57 +1,42 @@
-# Handoff -- 2026-03-11 (Session 12)
+# Handoff -- 2026-03-11 (Session 13)
 
 ## What Happened This Session
 
 ### Summary
-**Morgan got a design brain.** Three upgrades: (1) Domain Intelligence — a permanent design knowledge module injected into her prompt every invocation covering 13 UI styles, industry defaults, anti-patterns, pre-delivery checklist, stack defaults, and component-first workflow. (2) Design preference learning — a `[DESIGN_PREF]` extraction system that captures Rob's personal taste over time and loads it back as a "Learned Preferences (Rob)" subsection. (3) Proactive recommendation posture — she leads with concrete proposals (top design direction + one alternative + one risk), not just analysis.
+**Morgan got eyes.** Granted scroll-analyzer MCP access to Morgan in the chatroom. She can now open URLs in a headless browser, trace scroll triggers and CSS animations, and report what she actually sees — not what she guesses. This is a watcher-only change (not in git).
 
-Also added **collab-plan mode** to the audit skill: `--plan "description"` triggers a pre-flight plan review where all three personas contribute implementation approaches (Soren), architectural approaches (Atlas), and design directions with specific styles/colors/fonts/components (Morgan). Output is a `plan-review.md` pre-flight brief.
-
-### Morgan Domain Intelligence (watcher — not in git)
+### Morgan Scroll-Analyzer Access (watcher — not in git)
 
 | File | Change |
 |------|--------|
-| `c:\claude-collab\personas\morgan.md` | Added `## Domain Intelligence` section: 13-style vocabulary table, industry defaults, 8 anti-patterns, pre-delivery checklist, stack defaults, component-first workflow, default recommendation posture |
-| `c:\claude-collab\watcher\persona.js` | `extractLayer('Domain Intelligence')` + augments with `morgan-design-prefs.md`; `extractAndSaveDesignPrefs()` function; budget enforcement includes DI |
-| `c:\claude-collab\watcher\claude.js` | Design pref extraction wired into response pipeline (after journal, before PBLS strip) |
-| `c:\claude-collab\watcher\config.js` | Morgan `extraInstructions` updated with DESIGN CONTEXT pointer + DESIGN PREFERENCE LEARNING instructions |
-| `c:\claude-collab\personas\morgan-design-prefs.md` | New file — empty start, accumulates Rob's personal design preferences over time |
+| `c:\claude-collab\watcher\config.js` | Added `toolSet` (Read/Glob/Grep/WebFetch/WebSearch + all 17 scroll-analyzer tools) and `toolInstructions` (injected into her prompt) to Morgan's config |
+| `c:\claude-collab\watcher\claude.js` | `invokeClaude` now accepts `opts.tools` override — falls back to default set for Soren/Atlas |
+| `c:\claude-collab\watcher\router.js` | Both lobby and room invocations now pass `tools: config.toolSet` — Morgan gets her custom toolset, Soren/Atlas get default |
+| `c:\claude-collab\watcher\persona.js` | Injects `config.toolInstructions` into prompt when `includeToolAccess` is false but `toolInstructions` is set |
+| `c:\claude-collab\personas\morgan.md` | Added "Live Site Analysis" subsection to Domain Intelligence — she knows she can open and inspect live URLs |
 
-### Collab Plan Mode (in git)
+### How It Works
 
-| File | Change |
-|------|--------|
-| `collab-audit/audit.js` | `--plan "text"` / `--plan-file path` flags; `--context dir` for codebase context; 5 new plan-mode prompt builders; plan mode pipeline branch in `main()` |
-| `collab-audit/SKILL.md` | Updated description, added Plan Mode section with routing table, examples |
-| `CLAUDE.md` | Added `DESIGN.md` to key files table |
-| `DESIGN.md` | New project design system file — colors, typography, spacing, components, stack, anti-patterns |
+When Rob shares a URL in chat, Morgan can:
+- Open it with `mcp__scroll-analyzer__open_page`
+- Record scroll behavior with `scroll_and_record`
+- Extract actual CSS animations with `get_animation_css`
+- Trace scroll triggers with `get_scroll_triggers`
+- Do deep JS analysis with `deep_script_analysis`
+- Export replicable code with `export_replicable_code`
 
-### Design Preference System
+All 17 tools are in her `toolSet` and `allowedTools` — auto-approved, no permission prompt.
 
-Morgan writes `[DESIGN_PREF]...[/DESIGN_PREF]` tags when she observes Rob reacting to a design decision. The watcher strips these from her visible response and appends them to `morgan-design-prefs.md`. Next session, that file loads back into her Domain Intelligence as a "Learned Preferences (Rob)" subsection that overrides general design conventions.
+The architecture is also generalized: any participant can now get a custom tool set via `toolSet` in config. `invokeClaude` picks it up automatically.
 
-### Collab Plan Mode
+## Previous Session (Session 12) Summary
 
-```bash
-node audit.js --plan "description" --context c:\xampp\htdocs\myapp --verbose
-node audit.js --plan-file plan.md --context c:\xampp\htdocs\myapp --verbose
-```
-
-Output (`plan-review.md`):
-- Readiness assessment (GO/CAUTION/STOP from each reviewer)
-- Morgan's Design Brief (style + colors + typography + component kit)
-- Soren's Implementation Blueprint (approach + patterns + test strategy)
-- Atlas's Architecture Blueprint (system design + phasing)
-- Risks, gaps, open questions, recommended first phase
-
-## Previous Session (Session 11) Summary
-
-Watcher self-stopping bug fixed. Check 4 in `robPriorityCheck` was calling `session:paused` → `session_active=false` when Rob's heartbeat went stale, permanently killing the session. Fixed: now just returns `{pass:false}`. Also added 30s failure cooldown to break exit-code-1 retry loops.
+Morgan got a design brain: Domain Intelligence (13 styles, industry defaults, anti-patterns, checklist, stack defaults), design preference learning ([DESIGN_PREF] tags → morgan-design-prefs.md), proactive recommendation posture. Also added collab-plan mode to the audit skill (--plan flag triggers pre-flight planning with all three personas).
 
 ## Commits This Session
 
 ```
-(pending — see step 6)
+(no git-tracked changes this session — all changes in c:\claude-collab\watcher\)
 ```
 
 ## Active Issues
@@ -67,6 +52,7 @@ Watcher self-stopping bug fixed. Check 4 in `robPriorityCheck` was calling `sess
 
 ## Pending Work
 - Test collab-plan mode live run
+- Test Morgan's scroll-analyzer — share a URL and ask her to analyze the animations
 - Session-close synthesis script (compress raw journal → pattern updates)
 - Wire knowledge graph into watcher startup prompts
 - GitHub Issue #1: /commands for chatroom control
@@ -78,6 +64,7 @@ Watcher self-stopping bug fixed. Check 4 in `robPriorityCheck` was calling `sess
 - Remove dead DM code (~200 lines in api.php)
 
 ## Key Context
+- **Morgan has scroll-analyzer** — all 17 tools available; she opens live URLs and reports what she sees
 - **Morgan has Domain Intelligence** — 13 design styles, industry defaults, anti-patterns, checklist, stack defaults always in her prompt
 - **Morgan has design preference learning** — `[DESIGN_PREF]` tags accumulate Rob's personal taste in `morgan-design-prefs.md`, injected back each session
 - **Morgan's default posture** — leads with concrete proposals (top direction + alternative + risk), not just analysis
