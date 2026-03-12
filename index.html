@@ -122,8 +122,8 @@
     <script>
         const API = 'api.php';
         // Participant registry (single source of truth for frontend)
-        const PARTICIPANTS_ALL = ['Rob', 'Soren', 'Atlas', 'Morgan', 'Ellison'];
-        const PARTICIPANTS_AI = ['Soren', 'Atlas', 'Morgan', 'Ellison'];
+        const PARTICIPANTS_ALL = ['Rob', 'Soren', 'Atlas', 'Morgan', 'Ellison', 'SME'];
+        const PARTICIPANTS_AI = ['Soren', 'Atlas', 'Morgan', 'Ellison', 'SME'];
         const PARTICIPANTS_ACTIVE_AI = ['Soren', 'Atlas', 'Morgan'];
         const MENTION_NAMES = [...PARTICIPANTS_ALL, 'all', 'team'];
         const MENTION_REGEX = new RegExp('@(' + MENTION_NAMES.join('|') + ')\\b', 'gi');
@@ -531,6 +531,7 @@
                     `**Atlas:** ${s.participant_status_Atlas || 'idle'}`,
                     `**Morgan:** ${s.participant_status_Morgan || 'idle'}`,
                     `**Ellison:** ${s.participant_status_Ellison || 'idle'}`,
+                    `**SME:** ${s.participant_status_SME || 'idle'}`,
                 ];
                 showSystemLocal(lines.join('\n'));
             } catch (e) { showSystemLocal('Error: ' + e.message); }

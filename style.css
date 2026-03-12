@@ -21,6 +21,7 @@
     --web: #AF52DE;
     --morgan: #00C7BE;
     --ellison: #FF2D55;
+    --sme: #BF5AF2;
     --system: #8e8e93;
 
     /* --- Mentions --- */
@@ -424,6 +425,7 @@ header h1 {
 .from-web .msg-sender { color: var(--web); }
 .from-morgan .msg-sender { color: var(--morgan); }
 .from-ellison .msg-sender { color: var(--ellison); }
+.from-sme .msg-sender { color: var(--sme); }
 
 .msg-time {
     font-size: 0.68rem;

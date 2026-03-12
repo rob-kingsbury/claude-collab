@@ -833,8 +833,13 @@ function invokeClaude(prompt, targetDir, model, verbose) {
             '--dangerously-skip-permissions'
         ];
 
+        // Strip CLAUDECODE env var so child claude processes don't think they're nested
+        const childEnv = { ...process.env };
+        delete childEnv.CLAUDECODE;
+
         const child = spawn(process.execPath, args, {
             cwd: targetDir,
+            env: childEnv,
             stdio: ['pipe', 'pipe', 'pipe']
         });
 

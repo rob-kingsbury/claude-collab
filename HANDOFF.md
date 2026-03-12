@@ -1,43 +1,33 @@
-# Handoff -- 2026-03-11 (Session 13)
+# Handoff -- 2026-03-12 (Session 14)
 
 ## What Happened This Session
 
 ### Summary
-**Morgan got eyes.** Granted scroll-analyzer MCP access to Morgan in the chatroom. She can now open URLs in a headless browser, trace scroll triggers and CSS animations, and report what she actually sees — not what she guesses. This is a watcher-only change (not in git).
+**SME joins the chatroom + BandPilot marketing site shipped.** Added SME (Subject Matter Expert) as a chatroom participant for cross-project collaboration. Ran an extended chatroom session where the team (Morgan PM, Soren execution, Atlas architecture, SME docs/deployment) completed the BandPilot marketing site: TOS, Privacy Policy, Umami Cloud analytics, summary doc, and full WHC deployment. Also fixed collab-audit nested Claude env issue.
 
-### Morgan Scroll-Analyzer Access (watcher — not in git)
+### Changes (git-tracked)
 
 | File | Change |
 |------|--------|
-| `c:\claude-collab\watcher\config.js` | Added `toolSet` (Read/Glob/Grep/WebFetch/WebSearch + all 17 scroll-analyzer tools) and `toolInstructions` (injected into her prompt) to Morgan's config |
-| `c:\claude-collab\watcher\claude.js` | `invokeClaude` now accepts `opts.tools` override — falls back to default set for Soren/Atlas |
-| `c:\claude-collab\watcher\router.js` | Both lobby and room invocations now pass `tools: config.toolSet` — Morgan gets her custom toolset, Soren/Atlas get default |
-| `c:\claude-collab\watcher\persona.js` | Injects `config.toolInstructions` into prompt when `includeToolAccess` is false but `toolInstructions` is set |
-| `c:\claude-collab\personas\morgan.md` | Added "Live Site Analysis" subsection to Domain Intelligence — she knows she can open and inspect live URLs |
+| `api.php` | Added SME to `PARTICIPANTS_ALL` and `PARTICIPANTS_AI` arrays |
+| `index.html` | Added SME to frontend participant arrays + status panel |
+| `style.css` | Added `--sme: #BF5AF2` color variable and `.from-sme` sender class |
+| `collab-audit/audit.js` | Strip `CLAUDECODE` env var from child processes to fix nested invocation |
+| `read-messages.php` | New utility script for reading messages from CLI |
 
-### How It Works
+### BandPilot Marketing Work (separate repo, deployed)
 
-When Rob shares a URL in chat, Morgan can:
-- Open it with `mcp__scroll-analyzer__open_page`
-- Record scroll behavior with `scroll_and_record`
-- Extract actual CSS animations with `get_animation_css`
-- Trace scroll triggers with `get_scroll_triggers`
-- Do deep JS analysis with `deep_script_analysis`
-- Export replicable code with `export_replicable_code`
+All done in `c:\xampp\htdocs\bandpilot\` and deployed to bandpilotapp.com via SCP:
+- `docs/BANDPILOT_SUMMARY.md` — complete product summary (features, pricing, legal posture, competitive landscape)
+- `marketing/terms.html` — full 15-section Terms of Service adapted from Daybook templates
+- `marketing/privacy.html` — full 13-section Privacy Policy (PIPEDA, Umami, Supabase, Stripe)
+- Umami Cloud analytics snippet added to all marketing pages
+- `.htaccess` clean URL rewriting for /terms and /privacy
+- Favicons verified working
 
-All 17 tools are in her `toolSet` and `allowedTools` — auto-approved, no permission prompt.
+## Previous Session (Session 13) Summary
 
-The architecture is also generalized: any participant can now get a custom tool set via `toolSet` in config. `invokeClaude` picks it up automatically.
-
-## Previous Session (Session 12) Summary
-
-Morgan got a design brain: Domain Intelligence (13 styles, industry defaults, anti-patterns, checklist, stack defaults), design preference learning ([DESIGN_PREF] tags → morgan-design-prefs.md), proactive recommendation posture. Also added collab-plan mode to the audit skill (--plan flag triggers pre-flight planning with all three personas).
-
-## Commits This Session
-
-```
-(no git-tracked changes this session — all changes in c:\claude-collab\watcher\)
-```
+Morgan got scroll-analyzer MCP access (all 17 tools). She can now open live URLs in a headless browser, trace scroll triggers/CSS animations, and report what she sees. Architecture generalized so any participant can get custom tools via `toolSet` in config.
 
 ## Active Issues
 - **GitHub Issue #1**: /commands for chatroom control (partially implemented)
@@ -51,8 +41,9 @@ Morgan got a design brain: Domain Intelligence (13 styles, industry defaults, an
 - **P1/P2**: Migration runs on every request; add schema_version cache
 
 ## Pending Work
+- **BandPilot OG social card** (1200x630 landscape) — deferred, next design task
 - Test collab-plan mode live run
-- Test Morgan's scroll-analyzer — share a URL and ask her to analyze the animations
+- Test Morgan's scroll-analyzer with a real URL
 - Session-close synthesis script (compress raw journal → pattern updates)
 - Wire knowledge graph into watcher startup prompts
 - GitHub Issue #1: /commands for chatroom control
@@ -64,17 +55,16 @@ Morgan got a design brain: Domain Intelligence (13 styles, industry defaults, an
 - Remove dead DM code (~200 lines in api.php)
 
 ## Key Context
-- **Morgan has scroll-analyzer** — all 17 tools available; she opens live URLs and reports what she sees
-- **Morgan has Domain Intelligence** — 13 design styles, industry defaults, anti-patterns, checklist, stack defaults always in her prompt
-- **Morgan has design preference learning** — `[DESIGN_PREF]` tags accumulate Rob's personal taste in `morgan-design-prefs.md`, injected back each session
-- **Morgan's default posture** — leads with concrete proposals (top direction + alternative + risk), not just analysis
-- **DESIGN.md** — project design system at `c:\xampp\htdocs\claude-collab\DESIGN.md`
-- **Collab-plan mode live** — `audit.js --plan "description"` triggers pre-flight planning with all three personas
-- Watcher self-stopping bug fixed (session 11) — watcher no longer kills session on Rob heartbeat timeout
+- **SME participant registered** — purple (#BF5AF2), in API + frontend. Not in PARTICIPANTS_ACTIVE_AI (not auto-triggered by watcher). Responds via manual polling or external Claude session.
+- **Morgan has scroll-analyzer** — all 17 tools; opens live URLs and reports what she sees
+- **Morgan has Domain Intelligence** — 13 design styles, industry defaults, anti-patterns, checklist, stack defaults
+- **Morgan has design preference learning** — `[DESIGN_PREF]` tags → `morgan-design-prefs.md`
+- **Morgan's default posture** — leads with concrete proposals (top direction + alternative + risk)
+- **Collab-plan mode live** — `audit.js --plan "description"` triggers pre-flight planning
+- **Collab-audit env fix** — child Claude processes now strip CLAUDECODE env var to avoid nested detection
+- **BandPilot marketing site live** — bandpilotapp.com deployed via WHC/SCP, Umami Cloud analytics active
+- Watcher self-stopping bug fixed (session 11)
 - Smart routing live — keyword classifier routing unaddressed messages
 - Exchange cap at 8
-- Conversational tone guidelines live in config + persona files
 - Global collab-audit skill is a directory junction — changes to repo auto-propagate
-- Collab-audit pipeline is 3-person — Soren (code) + Atlas (architecture) + Morgan (UX) — parallel initial scans, exchange rounds, Atlas synthesis
-- Focus-based routing in SKILL.md steers all auditors toward the right domain
 - PBLS (Pattern-Based Behavioral Learning System) live for all three participants

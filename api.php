@@ -52,8 +52,8 @@ function ensureUtf8(string $str): string {
 }
 
 // --- Participant Registry (single source of truth) ---
-const PARTICIPANTS_ALL = ['Rob', 'Soren', 'Atlas', 'Morgan', 'System', 'Ellison'];
-const PARTICIPANTS_AI  = ['Soren', 'Atlas', 'Morgan', 'Ellison'];  // AI participants (for status, routing)
+const PARTICIPANTS_ALL = ['Rob', 'Soren', 'Atlas', 'Morgan', 'System', 'Ellison', 'SME'];
+const PARTICIPANTS_AI  = ['Soren', 'Atlas', 'Morgan', 'Ellison', 'SME'];  // AI participants (for status, routing)
 const PARTICIPANTS_ACTIVE_AI = ['Soren', 'Atlas', 'Morgan'];       // @team targets (active auto-responding AIs)
 
 // --- Database ---
