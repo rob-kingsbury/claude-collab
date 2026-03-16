@@ -954,6 +954,33 @@ header h1 {
 #chat-container::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.08); border-radius: 3px; }
 #chat-container::-webkit-scrollbar-thumb:hover { background: rgba(0, 0, 0, 0.15); }
 
+/* --- Message link/copy button --- */
+.msg-link-btn {
+    position: absolute;
+    top: 4px;
+    right: 32px;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    border: 1px solid var(--border-strong);
+    background: var(--bg);
+    color: var(--text-dim);
+    cursor: pointer;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s;
+    z-index: 5;
+    padding: 0;
+}
+.message:hover .msg-link-btn { display: inline-flex; }
+.msg-link-btn:hover { background: var(--surface); color: var(--text); }
+.msg-link-btn.copied {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
 /* --- Reactions --- */
 .reaction-bar {
     display: flex;
@@ -1021,6 +1048,7 @@ header h1 {
     transition: all 0.15s;
 }
 .reaction-chip:hover { background: var(--surface-2); }
+.reaction-chip.mine { background: var(--accent-soft); border-color: var(--accent); }
 
 /* --- Token indicators --- */
 #token-indicators {

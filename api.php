@@ -12,6 +12,7 @@
  * GET  ?action=conversations&for=<name>        → list DM conversations for a participant
  * GET  ?action=dm_messages&conversation_id=N[&since=N][&limit=N] → get DM messages
  * GET  ?action=attachments&message_id=N|dm_message_id=N → get attachments for a message
+ * GET  ?action=reactions&message_id=N          → get reactions for a message
  * POST {from, content}                        → add a chatroom message
  * POST {action: "status", id, status, by}     → update message delivery status
  * POST {action: "set_status", participant, state} → set participant busy/idle
@@ -23,6 +24,7 @@
  * POST {action: "create_conversation", from, with} → create/find a DM conversation
  * POST {action: "dm_read", conversation_id, reader} → mark DMs as read
  * POST {action: "upload"} (multipart form)     → upload a file attachment
+ * POST {action: "react", message_id, from, emoji} → toggle emoji reaction
  */
 
 header('Content-Type: application/json');
@@ -171,6 +173,17 @@ function initDb(PDO $db): void {
         CREATE INDEX IF NOT EXISTS idx_room_members_room ON room_members(room_id);
         CREATE INDEX IF NOT EXISTS idx_room_members_participant ON room_members(participant);
         CREATE INDEX IF NOT EXISTS idx_messages_room ON messages(room_id);
+
+        CREATE TABLE IF NOT EXISTS reactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            message_id INTEGER NOT NULL,
+            participant TEXT NOT NULL,
+            emoji TEXT NOT NULL,
+            created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            FOREIGN KEY (message_id) REFERENCES messages(id),
+            UNIQUE(message_id, participant, emoji)
+        );
+        CREATE INDEX IF NOT EXISTS idx_reactions_message ON reactions(message_id);
     ");
 
     // Initialize session state defaults
@@ -327,6 +340,20 @@ function migrateDb(PDO $db): void {
     }
     $db->exec("CREATE INDEX IF NOT EXISTS idx_messages_room ON messages(room_id)");
 
+    // Add reactions table
+    $db->exec("
+        CREATE TABLE IF NOT EXISTS reactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            message_id INTEGER NOT NULL,
+            participant TEXT NOT NULL,
+            emoji TEXT NOT NULL,
+            created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            FOREIGN KEY (message_id) REFERENCES messages(id),
+            UNIQUE(message_id, participant, emoji)
+        );
+        CREATE INDEX IF NOT EXISTS idx_reactions_message ON reactions(message_id);
+    ");
+
     // One-time migration: assign orphan NULL-session messages to session 1
     // This prevents historical messages from bleeding into every new session's AI context
     $orphanCount = $db->query("SELECT COUNT(*) as cnt FROM messages WHERE session_id IS NULL")->fetch()['cnt'];
@@ -421,6 +448,24 @@ function getAttachmentsForMessages(PDO $db, array $messageIds): array {
     foreach ($rows as $row) {
         $row['url'] = 'uploads/' . $row['filename'];
         $map[$row['message_id']][] = $row;
+    }
+    return $map;
+}
+
+// --- Helper: get reactions for an array of message IDs ---
+function getReactionsForMessages(PDO $db, array $messageIds): array {
+    if (empty($messageIds)) return [];
+    $placeholders = implode(',', array_fill(0, count($messageIds), '?'));
+    $stmt = $db->prepare("SELECT message_id, participant, emoji, created_at FROM reactions WHERE message_id IN ($placeholders) ORDER BY created_at ASC");
+    $stmt->execute($messageIds);
+    $rows = $stmt->fetchAll();
+    $map = [];
+    foreach ($rows as $row) {
+        $map[$row['message_id']][] = [
+            'participant' => $row['participant'],
+            'emoji' => $row['emoji'],
+            'created_at' => $row['created_at']
+        ];
     }
     return $map;
 }
@@ -556,8 +601,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         // Always initialize attachments array, and merge in file data for messages that have them
         $withAttachments = array_filter($messages, fn($m) => !empty($m['has_attachment']));
         $attachMap = !empty($withAttachments) ? getAttachmentsForMessages($db, array_column($withAttachments, 'id')) : [];
+        // Merge reactions for all messages
+        $allMsgIds = array_column($messages, 'id');
+        $reactMap = !empty($allMsgIds) ? getReactionsForMessages($db, $allMsgIds) : [];
         foreach ($messages as &$m) {
             $m['attachments'] = $attachMap[$m['id']] ?? [];
+            $m['reactions'] = $reactMap[$m['id']] ?? [];
         }
         unset($m);
 
@@ -673,9 +722,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
             $stmt = $db->prepare("SELECT * FROM messages WHERE id > ?$sessionFilter$roomFilter ORDER BY id ASC");
             $stmt->execute([$since]);
             $messages = $stmt->fetchAll();
+            $sinceMsgIds = array_column($messages, 'id');
+            $sinceReactMap = !empty($sinceMsgIds) ? getReactionsForMessages($db, $sinceMsgIds) : [];
             foreach ($messages as &$m) {
                 $m['mentions'] = json_decode($m['mentions'], true) ?? [];
                 $m['read_by'] = json_decode($m['read_by'], true) ?? [];
+                $m['reactions'] = $sinceReactMap[$m['id']] ?? [];
             }
             unset($m);
             echo json_encode(['ok' => true, 'mode' => 'since', 'messages' => $messages, 'count' => count($messages)], JSON_INVALID_UTF8_SUBSTITUTE);
@@ -693,9 +745,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         $stmt->execute([$afterId]);
         $messages = array_reverse($stmt->fetchAll()); // Reverse to chronological
 
+        $histMsgIds = array_column($messages, 'id');
+        $histReactMap = !empty($histMsgIds) ? getReactionsForMessages($db, $histMsgIds) : [];
         foreach ($messages as &$m) {
             $m['mentions'] = json_decode($m['mentions'], true) ?? [];
             $m['read_by'] = json_decode($m['read_by'], true) ?? [];
+            $m['reactions'] = $histReactMap[$m['id']] ?? [];
         }
         unset($m);
 
@@ -929,6 +984,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         unset($a);
 
         echo json_encode(['ok' => true, 'attachments' => $attachments], JSON_INVALID_UTF8_SUBSTITUTE);
+        exit;
+    }
+
+    // --- Reactions for a specific message ---
+    if ($action === 'reactions') {
+        $msgId = (int)($_GET['message_id'] ?? 0);
+        if ($msgId <= 0) {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'error' => 'Missing or invalid message_id']);
+            exit;
+        }
+        $stmt = $db->prepare("SELECT participant, emoji, created_at FROM reactions WHERE message_id = ? ORDER BY created_at ASC");
+        $stmt->execute([$msgId]);
+        $reactions = $stmt->fetchAll();
+        echo json_encode(['ok' => true, 'reactions' => $reactions], JSON_INVALID_UTF8_SUBSTITUTE);
         exit;
     }
 
@@ -1688,6 +1758,50 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $attachment['url'] = 'uploads/' . $attachment['filename'];
 
         echo json_encode(['ok' => true, 'attachment' => $attachment], JSON_INVALID_UTF8_SUBSTITUTE);
+        exit;
+    }
+
+    // --- React (toggle emoji reaction on a message) ---
+    if ($action === 'react') {
+        $messageId = (int)($input['message_id'] ?? 0);
+        $from = trim($input['from'] ?? '');
+        $emoji = ensureUtf8(trim($input['emoji'] ?? ''));
+
+        if ($messageId <= 0 || $from === '' || $emoji === '') {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'error' => 'Missing message_id, from, or emoji']);
+            exit;
+        }
+
+        // Verify message exists
+        $msgCheck = $db->prepare("SELECT id FROM messages WHERE id = ?");
+        $msgCheck->execute([$messageId]);
+        if (!$msgCheck->fetch()) {
+            http_response_code(404);
+            echo json_encode(['ok' => false, 'error' => 'Message not found']);
+            exit;
+        }
+
+        // Toggle: if exists, remove; if not, add
+        $existing = $db->prepare("SELECT id FROM reactions WHERE message_id = ? AND participant = ? AND emoji = ?");
+        $existing->execute([$messageId, $from, $emoji]);
+
+        if ($existing->fetch()) {
+            // Remove
+            $db->prepare("DELETE FROM reactions WHERE message_id = ? AND participant = ? AND emoji = ?")->execute([$messageId, $from, $emoji]);
+            $toggled = 'removed';
+        } else {
+            // Add
+            $db->prepare("INSERT INTO reactions (message_id, participant, emoji) VALUES (?, ?, ?)")->execute([$messageId, $from, $emoji]);
+            $toggled = 'added';
+        }
+
+        // Return updated reactions for this message
+        $stmt = $db->prepare("SELECT participant, emoji, created_at FROM reactions WHERE message_id = ? ORDER BY created_at ASC");
+        $stmt->execute([$messageId]);
+        $reactions = $stmt->fetchAll();
+
+        echo json_encode(['ok' => true, 'toggled' => $toggled, 'reactions' => $reactions], JSON_INVALID_UTF8_SUBSTITUTE);
         exit;
     }
 

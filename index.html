@@ -1035,6 +1035,26 @@
                 <span class="msg-time">${time}</span>
             `;
 
+            // Link/copy button (hover reveal)
+            const linkBtn = document.createElement('button');
+            linkBtn.className = 'msg-link-btn';
+            linkBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>';
+            linkBtn.title = 'Copy message reference';
+            linkBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const ref = `[Message ${msg.id} by ${sender}]`;
+                navigator.clipboard.writeText(ref).then(() => {
+                    linkBtn.classList.add('copied');
+                    const origTitle = linkBtn.title;
+                    linkBtn.title = 'Copied!';
+                    setTimeout(() => {
+                        linkBtn.classList.remove('copied');
+                        linkBtn.title = origTitle;
+                    }, 1500);
+                }).catch(() => {});
+            });
+            div.appendChild(linkBtn);
+
             // Reaction bar
             const reactionBar = document.createElement('div');
             reactionBar.className = 'reaction-bar';
@@ -1047,6 +1067,10 @@
                 showReactionPicker(div, reactionBar);
             });
             reactionBar.appendChild(reactionTrigger);
+            // Render persisted reactions from API data
+            if (msg.reactions && msg.reactions.length > 0) {
+                renderReactions(reactionBar, msg.reactions);
+            }
             div.appendChild(reactionBar);
 
             return div;
@@ -1081,7 +1105,7 @@
             }
         }
 
-        const REACTIONS = ['\u{1F44D}', '\u2705', '\u{1F440}', '\u2753', '\u{1F3AF}', '\u{1F4A1}'];
+        const REACTIONS = ['\u{1F44D}', '\u2764\uFE0F', '\u{1F525}', '\u{1F440}', '\u{1F914}', '\u{1F602}'];
 
         function showReactionPicker(msgEl, bar) {
             // Remove any existing picker
@@ -1108,20 +1132,72 @@
             }, 0);
         }
 
-        function toggleReaction(msgEl, bar, emoji) {
+        async function toggleReaction(msgEl, bar, emoji) {
             const msgId = msgEl.dataset.id;
-            // Check if reaction already exists
-            let existing = bar.querySelector(`.reaction-chip[data-emoji="${emoji}"]`);
-            if (existing) {
-                existing.remove();
-            } else {
+            if (!msgId) return;
+            try {
+                const res = await fetch(API, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: 'react', message_id: parseInt(msgId), from: currentSender, emoji })
+                });
+                const data = await res.json();
+                if (data.ok) {
+                    renderReactions(bar, data.reactions);
+                }
+            } catch (e) {
+                console.error('Reaction toggle failed:', e);
+            }
+        }
+
+        function renderReactions(bar, reactions) {
+            // Remove existing chips (keep trigger button)
+            bar.querySelectorAll('.reaction-chip').forEach(c => c.remove());
+            if (!reactions || reactions.length === 0) return;
+            // Group by emoji: { emoji: [participant, ...] }
+            const grouped = {};
+            for (const r of reactions) {
+                if (!grouped[r.emoji]) grouped[r.emoji] = [];
+                grouped[r.emoji].push(r.participant);
+            }
+            const trigger = bar.querySelector('.reaction-trigger');
+            for (const [emoji, participants] of Object.entries(grouped)) {
                 const chip = document.createElement('span');
                 chip.className = 'reaction-chip';
                 chip.dataset.emoji = emoji;
-                chip.textContent = emoji;
-                chip.addEventListener('click', () => chip.remove());
-                bar.insertBefore(chip, bar.querySelector('.reaction-trigger'));
+                const isMine = participants.includes(currentSender);
+                if (isMine) chip.classList.add('mine');
+                chip.textContent = `${emoji} ${participants.length > 1 ? participants.length : participants[0]}`;
+                chip.title = participants.join(', ');
+                chip.addEventListener('click', () => {
+                    const msgEl = bar.closest('.message');
+                    toggleReaction(msgEl, bar, emoji);
+                });
+                bar.insertBefore(chip, trigger);
             }
+        }
+
+        async function syncReactions() {
+            // Get IDs of last 30 visible messages and refresh their reactions
+            const msgEls = messagesEl.querySelectorAll('.message[data-id]');
+            if (msgEls.length === 0) return;
+            const ids = Array.from(msgEls).slice(-30).map(el => parseInt(el.dataset.id)).filter(id => id > 0);
+            if (ids.length === 0) return;
+            // Fetch reactions for these messages via the messages endpoint (batch)
+            // We'll just re-fetch reactions for each visible message
+            try {
+                for (const id of ids) {
+                    const res = await fetch(`${API}?action=reactions&message_id=${id}`, { cache: 'no-store' });
+                    const data = await res.json();
+                    if (data.ok) {
+                        const el = messagesEl.querySelector(`.message[data-id="${id}"]`);
+                        if (el) {
+                            const bar = el.querySelector('.reaction-bar');
+                            if (bar) renderReactions(bar, data.reactions);
+                        }
+                    }
+                }
+            } catch (e) { /* non-critical */ }
         }
 
         function escapeHtml(str) {
@@ -1504,6 +1580,7 @@
                 } catch (e) { console.error('Auto-start failed:', e); }
             }
 
+            let reactionPollCounter = 0;
             setInterval(async () => {
                 if (isPolling || document.hidden) return;
                 isPolling = true;
@@ -1511,6 +1588,11 @@
                     await fetchMessages();
                     await fetchState();
                     fetchRooms(); // Always refresh sidebar (non-blocking)
+                    // Sync reactions every 5th cycle (~10s) for visible messages
+                    reactionPollCounter++;
+                    if (reactionPollCounter % 5 === 0) {
+                        syncReactions();
+                    }
                 } finally {
                     isPolling = false;
                 }
