@@ -1,6 +1,5 @@
 # Allow access to uploaded files (overrides root .htaccess deny)
-Order deny,allow
-Allow from all
+Require all granted
 
 # Prevent PHP execution in uploads directory
 php_flag engine off

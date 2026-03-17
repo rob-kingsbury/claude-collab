@@ -19,9 +19,8 @@ if ($count > 0) {
 }
 
 $messages = [
-    ['System', 'Session started by Rob.', '[]'],
-    ['Rob', 'Testing 1,2,3 — anyone home?', '[]'],
-    ['Code', 'Code checking in! API is working, watcher is polling. Standing by for tasks. @Rob', '["Rob"]'],
+    ['System', 'Session started.', '[]'],
+    ['System', 'Participants initialized. Waiting for session start.', '[]'],
 ];
 
 $stmt = $db->prepare("INSERT INTO messages (participant, content, mentions, read_by) VALUES (?, ?, ?, ?)");

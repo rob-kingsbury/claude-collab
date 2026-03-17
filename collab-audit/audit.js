@@ -24,8 +24,8 @@ const path = require('path');
 
 // --- Configuration ---
 
-const CLAUDE_CLI_JS = 'C:\\Users\\roban\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\cli.js';
-const PERSONAS_DIR = 'C:\\claude-collab\\personas';
+const CLAUDE_CLI_JS = process.env.CLAUDE_CLI_JS || path.join(path.dirname(process.execPath), 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js');
+const PERSONAS_DIR = process.env.COLLAB_PERSONAS_DIR || path.resolve(__dirname, '..', '..', 'personas');
 const DEFAULT_MODEL = 'opus';
 const DEFAULT_EXCHANGE_MODEL = 'sonnet'; // Exchange rounds use faster model by default
 const MAX_TURNS = 25;

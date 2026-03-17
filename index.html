@@ -121,12 +121,37 @@
     <!-- New message notification sound (short beep via Web Audio API) -->
     <script>
         const API = 'api.php';
-        // Participant registry (single source of truth for frontend)
-        const PARTICIPANTS_ALL = ['Rob', 'Soren', 'Atlas', 'Morgan', 'Ellison', 'SME'];
-        const PARTICIPANTS_AI = ['Soren', 'Atlas', 'Morgan', 'Ellison', 'SME'];
-        const PARTICIPANTS_ACTIVE_AI = ['Soren', 'Atlas', 'Morgan'];
-        const MENTION_NAMES = [...PARTICIPANTS_ALL, 'all', 'team'];
-        const MENTION_REGEX = new RegExp('@(' + MENTION_NAMES.join('|') + ')\\b', 'gi');
+        // Participant registry — loaded from API, with fallbacks for initial render
+        // Fallback values — overwritten by loadParticipants() from API
+        let PARTICIPANTS_ALL = ['Rob', 'System', 'Ellison'];
+        let PARTICIPANTS_AI = ['Ellison'];
+        let PARTICIPANTS_ACTIVE_AI = [];
+        let MENTION_NAMES = [...PARTICIPANTS_ALL, 'all', 'team'];
+        let MENTION_REGEX = new RegExp('@(' + MENTION_NAMES.join('|') + ')\\b', 'gi');
+
+        // Fetch participant list from API (single source of truth)
+        async function loadParticipants() {
+            try {
+                const res = await fetch(`${API}?action=participants`, { cache: 'no-store' });
+                const data = await res.json();
+                if (data.ok) {
+                    PARTICIPANTS_ALL = data.all;
+                    PARTICIPANTS_AI = data.ai;
+                    PARTICIPANTS_ACTIVE_AI = data.active_ai;
+                    ownerName = data.owner || ownerName;
+                    currentSender = ownerName;
+                    MENTION_NAMES = [...PARTICIPANTS_ALL, 'all', 'team'];
+                    MENTION_REGEX = new RegExp('@(' + MENTION_NAMES.join('|') + ')\\b', 'gi');
+                    // Update sender button if it exists
+                    const ownerBtn = document.querySelector('[data-sender="Rob"]');
+                    if (ownerBtn) {
+                        ownerBtn.dataset.sender = ownerName;
+                        ownerBtn.textContent = ownerName;
+                    }
+                }
+            } catch (e) { /* use fallbacks */ }
+        }
+        let ownerName = 'Rob'; // Overwritten by loadParticipants()
         let currentSender = 'Rob';
         let lastMessageId = 0;
         let isPolling = false;
@@ -170,6 +195,7 @@
         const dropOverlay = document.getElementById('drop-overlay');
         // convoSearch removed — rooms don't need sidebar search yet
         let sessionActive = false;
+        let sessionEndedExplicitly = false;
         const senderBtns = document.querySelectorAll('.sender-btn');
 
         // --- Request notification permission on first click ---
@@ -231,8 +257,8 @@
                         // Toggle off — back to Rob
                         exitGuestMode();
                         senderBtns.forEach(b => b.classList.remove('active'));
-                        document.querySelector('[data-sender="Rob"]').classList.add('active');
-                        currentSender = 'Rob';
+                        document.querySelector(`[data-sender="${ownerName}"]`).classList.add('active');
+                        currentSender = ownerName;
                     } else {
                         // Enter guest mode
                         guestMode = true;
@@ -263,8 +289,8 @@
             if (e.key === 'Escape') {
                 exitGuestMode();
                 senderBtns.forEach(b => b.classList.remove('active'));
-                document.querySelector('[data-sender="Rob"]').classList.add('active');
-                currentSender = 'Rob';
+                document.querySelector(`[data-sender="${ownerName}"]`).classList.add('active');
+                currentSender = ownerName;
                 inputEl.focus();
             }
         });
@@ -273,7 +299,7 @@
         sessionToggle.addEventListener('click', async () => {
             const newState = sessionActive ? 'paused' : 'active';
             if (sessionActive && !confirm('End the current session? This will close the session and pause all AI participants.')) return;
-            const msg = sessionActive ? 'Session stopped by Rob.' : 'Session started by Rob.';
+            const msg = sessionActive ? 'Session stopped.' : 'Session started.';
             try {
                 await fetch(API, {
                     method: 'POST',
@@ -362,14 +388,14 @@
         // --- Typing indicator (Rob priority enforcement, throttled to 1 POST per 3s) ---
         let lastTypingSent = 0;
         inputEl.addEventListener('input', () => {
-            if (currentSender === 'Rob') {
+            if (currentSender === ownerName) {
                 const now = Date.now();
                 if (now - lastTypingSent < 3000) return;
                 lastTypingSent = now;
                 fetch(API, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ action: 'typing', participant: 'Rob' })
+                    body: JSON.stringify({ action: 'typing', participant: ownerName })
                 }).catch(() => {});
             }
         });
@@ -526,12 +552,8 @@
                 const lines = [
                     `**Session:** ${s.session_active === 'true' ? 'Active' : 'Inactive'}`,
                     `**Exchanges:** ${s.exchange_counter}/${s.exchange_cap}`,
-                    `**Rob:** ${s.rob_focused === 'true' ? 'present' : 'away'}`,
-                    `**Soren:** ${s.participant_status_Soren || 'idle'}`,
-                    `**Atlas:** ${s.participant_status_Atlas || 'idle'}`,
-                    `**Morgan:** ${s.participant_status_Morgan || 'idle'}`,
-                    `**Ellison:** ${s.participant_status_Ellison || 'idle'}`,
-                    `**SME:** ${s.participant_status_SME || 'idle'}`,
+                    `**${ownerName}:** ${s.rob_focused === 'true' ? 'present' : 'away'}`,
+                    ...PARTICIPANTS_AI.map(p => `**${p}:** ${s['participant_status_' + p] || 'idle'}`),
                 ];
                 showSystemLocal(lines.join('\n'));
             } catch (e) { showSystemLocal('Error: ' + e.message); }
@@ -547,12 +569,12 @@
             const sub = (args || '').trim().toLowerCase();
             if (sub === 'start') {
                 await fetch(API, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({action:'session', state:'active'}) });
-                await fetch(API, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({from:'System', content:'Session started by Rob via /session.'}) });
+                await fetch(API, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({from:'System', content:'Session started via /session.'}) });
                 showSystemLocal('Session started.');
             } else if (sub === 'end') {
                 if (!confirm('End the current session?')) return;
                 await fetch(API, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({action:'session', state:'paused', close_session:true}) });
-                await fetch(API, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({from:'System', content:'Session ended by Rob via /session.'}) });
+                await fetch(API, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({from:'System', content:'Session ended via /session.'}) });
                 showSystemLocal('Session ended.');
             } else {
                 showSystemLocal('Usage: **/session start** or **/session end**');
@@ -780,6 +802,7 @@
                 const s = data.state;
                 const active = s.session_active === 'true';
                 sessionActive = active;
+                sessionEndedExplicitly = s.session_ended_explicitly === 'true';
                 const newSessionId = s.current_session_id ? parseInt(s.current_session_id) : null;
                 if (newSessionId !== currentSessionId) {
                     currentSessionId = newSessionId;
@@ -794,7 +817,7 @@
                 const robPresent = s.rob_focused === 'true';
                 const convState = s.conversation_state || 'active';
                 if (active) {
-                    exchangeEl.textContent = robPresent ? 'Rob: present' : `Rob: away (${convState})`;
+                    exchangeEl.textContent = robPresent ? `${ownerName}: present` : `${ownerName}: away (${convState})`;
                     exchangeEl.className = robPresent ? 'presence-on' : 'presence-off';
                 } else {
                     exchangeEl.textContent = '';
@@ -875,7 +898,7 @@
             const robTypingAt = stateObj.rob_typing_at;
             if (robTypingAt) {
                 const elapsed = Date.now() - new Date(robTypingAt.replace(/Z+$/, '') + 'Z').getTime();
-                if (elapsed < 5000) active.push({ name: 'Rob', verb: 'typing' });
+                if (elapsed < 5000) active.push({ name: ownerName, verb: 'typing' });
             }
 
             const wasVisible = !typingIndicator.classList.contains('hidden');
@@ -977,7 +1000,7 @@
         function buildMessageElement(msg) {
             const div = document.createElement('div');
             const sender = (msg.participant && msg.participant !== '') ? msg.participant : (msg.from || 'Unknown');
-            const knownSenders = ['rob', 'soren', 'atlas', 'morgan', 'web', 'system', 'ellison'];
+            const knownSenders = PARTICIPANTS_ALL.map(p => p.toLowerCase().replace(/[^a-z0-9]/g, '-'));
             const senderKey = sender.toLowerCase().replace(/[^a-z0-9]/g, '-');
             const senderClass = knownSenders.includes(senderKey) ? `from-${senderKey}` : 'from-guest';
             div.className = `message ${senderClass}`;
@@ -1027,10 +1050,10 @@
                     <div class="msg-content">${contentHtml}</div>
                     ${attachmentsHtml}
                     ${safeMentions ? `<div class="msg-mentions">&rarr; ${safeMentions}</div>` : ''}
-                    ${isToolApproval && currentSender === 'Rob' ? `<div class="tool-approval-buttons">
+                    ${isToolApproval && currentSender === ownerName ? `<div class="tool-approval-buttons">
                         <button class="approve-btn" onclick="sendToolApproval('approve', this)">Approve</button>
                         <button class="deny-btn" onclick="sendToolApproval('deny', this)">Deny</button>
-                    </div>` : (isToolApproval ? '<div class="tool-approval-status">Awaiting Rob\'s approval</div>' : '')}
+                    </div>` : (isToolApproval ? '<div class="tool-approval-status">Awaiting approval</div>' : '')}
                 </div>
                 <span class="msg-time">${time}</span>
             `;
@@ -1178,22 +1201,20 @@
         }
 
         async function syncReactions() {
-            // Get IDs of last 30 visible messages and refresh their reactions
+            // Get IDs of last 30 visible messages and refresh their reactions in a single batch request
             const msgEls = messagesEl.querySelectorAll('.message[data-id]');
             if (msgEls.length === 0) return;
             const ids = Array.from(msgEls).slice(-30).map(el => parseInt(el.dataset.id)).filter(id => id > 0);
             if (ids.length === 0) return;
-            // Fetch reactions for these messages via the messages endpoint (batch)
-            // We'll just re-fetch reactions for each visible message
             try {
-                for (const id of ids) {
-                    const res = await fetch(`${API}?action=reactions&message_id=${id}`, { cache: 'no-store' });
-                    const data = await res.json();
-                    if (data.ok) {
-                        const el = messagesEl.querySelector(`.message[data-id="${id}"]`);
+                const res = await fetch(`${API}?action=reactions&message_ids=${ids.join(',')}`, { cache: 'no-store' });
+                const data = await res.json();
+                if (data.ok && data.reactions_by_message) {
+                    for (const [msgId, reactions] of Object.entries(data.reactions_by_message)) {
+                        const el = messagesEl.querySelector(`.message[data-id="${msgId}"]`);
                         if (el) {
                             const bar = el.querySelector('.reaction-bar');
-                            if (bar) renderReactions(bar, data.reactions);
+                            if (bar) renderReactions(bar, reactions);
                         }
                     }
                 }
@@ -1213,7 +1234,7 @@
                 await fetch(API, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ from: 'Rob', content: decision })
+                    body: JSON.stringify({ from: ownerName, content: decision })
                 });
             } catch (e) { console.error('Tool approval failed:', e); }
         }
@@ -1276,7 +1297,7 @@
         // --- Sidebar: fetch & render conversations ---
         async function fetchRooms() {
             try {
-                const res = await fetch(`${API}?action=rooms&for=Rob`, {cache: 'no-store'});
+                const res = await fetch(`${API}?action=rooms&for=${encodeURIComponent(ownerName)}`, {cache: 'no-store'});
                 const data = await res.json();
                 if (data.ok) {
                     rooms = data.rooms || [];
@@ -1302,7 +1323,7 @@
                 div.dataset.roomId = room.id;
 
                 // Participant-centric: show other members' names (filter out Rob)
-                const otherMembers = (room.members || []).filter(m => m !== 'Rob');
+                const otherMembers = (room.members || []).filter(m => m !== ownerName);
                 const displayName = otherMembers.length > 0 ? otherMembers.join(', ') : room.name;
 
                 // Avatar: colored circle with first member's initial, or stacked for multiple
@@ -1469,9 +1490,6 @@
                 formData.append('action', 'upload');
                 formData.append('uploaded_by', currentSender);
                 formData.append('message_id', messageId);
-                if (file.size > MAX_FILE_SIZE) {
-                    formData.append('override_cap', 'true');
-                }
                 try {
                     await fetch(API, { method: 'POST', body: formData });
                 } catch (e) { console.error('Upload failed:', e); }
@@ -1489,7 +1507,7 @@
         function renderRoomModal() {
             const container = document.getElementById('room-member-checkboxes');
             container.innerHTML = '';
-            PARTICIPANTS_ALL.filter(p => p !== 'Rob').forEach(p => {
+            PARTICIPANTS_ALL.filter(p => p !== ownerName).forEach(p => {
                 const key = p.toLowerCase();
                 const label = document.createElement('label');
                 label.className = 'member-checkbox';
@@ -1506,7 +1524,7 @@
             const checkboxes = document.querySelectorAll('#room-member-checkboxes input:checked');
             if (checkboxes.length === 0) { alert('Select at least one participant.'); return; }
             const otherMembers = Array.from(checkboxes).map(cb => cb.value);
-            const members = ['Rob', ...otherMembers];
+            const members = [ownerName, ...otherMembers];
             const name = otherMembers.join(', ');
 
             try {
@@ -1558,12 +1576,13 @@
 
         // --- Polling (with overlap guard + visibility catch-up + auto-start) ---
         async function startPolling(intervalMs = 2000) {
+            await loadParticipants(); // Load participant registry from API
             await fetchState(); // Must run first so currentSessionId is set before rendering messages
             await fetchMessages();
             await fetchRooms();
 
-            // Auto-start session if not active
-            if (!sessionActive) {
+            // Auto-start session if not active (unless explicitly ended)
+            if (!sessionActive && !sessionEndedExplicitly) {
                 try {
                     await fetch(API, {
                         method: 'POST',
