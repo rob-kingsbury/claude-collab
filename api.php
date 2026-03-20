@@ -468,6 +468,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
                 if ($currentId !== null) {
                     $conditions[] = "session_id = ?";
                     $params[] = $currentId;
+                } else {
+                    // No active session — return nothing (not everything)
+                    $conditions[] = "1 = 0";
                 }
             } elseif (is_numeric($session)) {
                 // Specific session ID
@@ -1169,7 +1172,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // --- Watcher control (start/stop from frontend) ---
     if ($action === 'watcher_control') {
         $command = $input['command'] ?? '';
-        $watcherScript = getenv('COLLAB_WATCHER_SCRIPT') ?: (__DIR__ . '/../watcher/watcher.js');
+        $watcherScript = getenv('COLLAB_WATCHER_SCRIPT') ?: 'C:\\claude-collab\\watcher.js';
         $watcherPid = (int)getState($db, 'watcher_pid');
 
         if ($command === 'stop' && $watcherPid > 0) {

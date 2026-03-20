@@ -1,78 +1,50 @@
-# Handoff -- 2026-03-17 (Session 16)
+# Handoff -- 2026-03-19 (Session 17)
 
 ## What Happened This Session
 
 ### Summary
-**Starter kit packaging + audit-driven codebase cleanup.** Ran a collab audit focused on security/PII, accuracy, and cold-install readiness. Fixed 16 findings (2 high, 11 medium, 3 low). Removed ~200 lines of dead DM code, added batch reactions endpoint, migration caching, configurable owner name, API-served participant registry, and parameterized paths. Built and zipped a starter kit (`claude-collab-starter.zip`) for sharing with a student — includes all code, example personas, Ellison facilitator, docs, and a setup README.
+**Guest profile system + Ottawa Valley tone + bug fixes.** Built guest-aware prompt injection (auto-detects `[Guest]` senders, injects profiles from config). Added Jeans' profile (blues/guitar/sweary bandmate). Added Ottawa Valley register to all three AI participants' extraInstructions. Fixed three bugs: watcher path wrong (couldn't start from UI), messages endpoint returning all history when no active session, and watcher start path defaulting to wrong directory.
 
-### Changes (git-tracked)
+### Changes
+
+**git-tracked (claude-collab web root):**
 
 | File | Change |
 |------|--------|
-| `api.php` | OWNER_NAME constant, schema_version migration cache, batch reactions endpoint, `?action=participants` endpoint, removed DM code (~200 lines), parameterized watcher path, removed client-controlled override_cap, race-safe reaction toggle, SQL parameterization in history, `room_id` in initDb, dynamic participant status defaults |
-| `index.html` | Frontend loads participants from API (`loadParticipants()`), `ownerName` variable replaces hardcoded 'Rob', batch reaction sync (1 request instead of 30), session auto-start respects `session_ended_explicitly`, removed SME, dynamic `knownSenders` from API |
-| `collab-audit/audit.js` | Parameterized `CLAUDE_CLI_JS` and `PERSONAS_DIR` via env vars with resolved defaults |
-| `uploads/.htaccess` | Fixed Apache 2.2→2.4 syntax (`Require all granted`) — prevents silent cold-install file-serving break |
-| `seed-db.php` | Removed hardcoded participant names, generic seed messages |
-| `messages.example.json` | **Deleted** — vestigial flat-file format |
-| `read-messages.php` | **Deleted** — dead debug utility with hardcoded absolute path |
+| `api.php` | Fixed watcher script default path (`C:\claude-collab\watcher.js`). Fixed messages endpoint returning all history when no active session (`1=0` guard). |
 
-### Audit Results (Session 16)
+**NOT git-tracked (c:\claude-collab\ watcher directory):**
 
-Full collab audit (Soren + Atlas + Morgan, 10 invocations, 8.4 min). 0 critical, 2 high, 11 medium, 17 low findings.
+| File | Change |
+|------|--------|
+| `watcher/config.js` | Added `GUEST_PROFILES` config (Jeans, S). Added Valley Register directive to Soren, Atlas, Morgan extraInstructions. |
+| `watcher/persona.js` | Guest detection in `buildPrompt()` — scans pendingMessages for `[Guest]` senders, injects matching profiles from config. Imported `GUEST_PROFILES` from config. |
 
-**Fixed this session:**
-- M1: Migration runs every request → schema_version cache
-- M2: N+1 reaction sync (30 HTTP requests/10s) → single batch endpoint
-- M3: Mixed Apache .htaccess syntax → Apache 2.4 throughout
-- M4: Session auto-start ignores explicit end → checks `session_ended_explicitly`
-- M6: Hardcoded watcher path → env var with default
-- M7: Hardcoded paths in audit.js → env vars with resolved defaults
-- M8: Client-controlled override_cap → server-side limit only
-- M9: Participant registry triplicated → API endpoint, frontend loads from API
-- M10: No configuration mechanism → OWNER_NAME constant, env vars, API-served config
-- M11: Silent popen watcher start → script existence check + heartbeat verification
-- L1: SQL string interpolation in history → parameterized queries
-- L3: Reaction toggle race condition → INSERT-or-catch-DELETE
-- L5: Dead DM code → removed (~200 lines)
-- L6: Vestigial JSON files → deleted
-- L7: Stale name in seed-db → generic messages
-- L9: Dead read-messages.php → deleted
-- Cold-install bug: `room_id` column missing from `initDb()` CREATE TABLE → added
+### Guest Profile System
 
-**Still open (not fixed):**
-- H1: No authentication (architectural — localhost-only by design)
-- H2: Mobile sidebar inaccessible (needs hamburger toggle)
-- M5/N2: Room management endpoints have no authorization
-- L2: Underscore in participant names (low risk)
-- L4: Client-supplied MIME type used as primary
-- L8: /mute and /unmute registered but not implemented
-- L10: Schema defined twice in initDb + migrateDb
-- L11: Mention parsing duplicated between lobby and room handlers
-- L12: Full session_state dump every 2s poll
-- L13: 3 separate HTTP fetches per 2s poll (combine into ?action=poll)
-- L14: Inconsistent error handling across endpoints
+- `GUEST_PROFILES` in `config.js` — keyed by lowercase name before `[Guest]` suffix
+- Auto-detected in `buildPrompt()` when pending messages contain `[Guest]` senders
+- Injected as `=== GUEST CONTEXT ===` block after extraInstructions
+- Unknown guests get generic "be welcoming" fallback
+- Current profiles: **Jeans** (blues/guitar bandmate, sweary, Ottawa Valley), **S** (Rob's partner)
 
-### Starter Kit
+### Ottawa Valley Register
 
-Built `claude-collab-starter.zip` (151 KB, 37 files) on Desktop for email distribution. Contains:
-- Full web frontend + watcher engine with parameterized paths
-- Example personas (Soren, Atlas, Morgan) + Ellison facilitator
-- Empty journal stubs, PBLS framework with example patterns
-- Personality engineering spec, questionnaire, design system docs
-- README with setup instructions (no emojis)
+Added to all three AI participants' `extraInstructions`:
+- Direct, sweary, no-bullshit, dry humor
+- "eh", "bud/buds", "give'er", "get'er done" sprinkled naturally
+- Profanity as punctuation, not aggression
+- Match energy — if they're loose and sweary, be too
 
-**Excluded:** All journal content, evaluation transcripts, database, scratch files, user uploads, SME participant, session-specific docs.
+### Bugs Fixed
 
-**Key config points for recipient:**
-1. `OWNER_NAME` in `web/api.php` — change from 'Rob'
-2. `API_BASE` in `watcher/config.js` — verify Apache URL
-3. Watcher modules still reference 'Rob' in functional code — needs find/replace if owner name changes
-4. Participant names change after Ellison evaluation — update config.js PARTICIPANTS + api.php constants
+1. **Watcher won't start from UI** — default path `__DIR__ . '/../watcher/watcher.js'` resolved to wrong directory. Changed to absolute `C:\claude-collab\watcher.js`.
+2. **All history shown when no session active** — `getCurrentSessionId()` returning null meant no session filter was applied, dumping every message. Added `1=0` guard.
+3. **Token bars full / can't hide history** — same root cause as #2. No session = all messages loaded = token counters maxed.
 
-## Previous Session (Session 15) Summary
+## Previous Session (Session 16) Summary
 
-Extended Ellison personality session + curiosity system + emoji AI integration. Humor registers developed, behavioral directives codified, new personality traits chosen. Built curiosity/autonomous learning module. Verified emoji/reaction system end-to-end.
+Starter kit packaging + audit-driven codebase cleanup. Ran collab audit, fixed 16 findings. Removed ~200 lines dead DM code. Built claude-collab-starter.zip (151 KB) for distribution.
 
 ## Active Issues
 - **GitHub Issue #1**: /commands for chatroom control (partially implemented)
@@ -86,39 +58,34 @@ Extended Ellison personality session + curiosity system + emoji AI integration. 
 
 ### Medium
 - **M5/N2**: Room management endpoints have no authorization
-- **S1**: No authentication; verify Apache binds to 127.0.0.1 only
 
 ### Low
-- L2, L4, L8, L10-L14 (see audit results above)
+- L2, L4, L8, L10-L14 (see session 16 handoff in git history)
 
 ## Pending Work
-- **BandPilot OG social card** (1200x630 landscape) — deferred
 - Test curiosity system live
 - Test collab-plan mode live run
 - Test Morgan's scroll-analyzer with a real URL
-- Session-close synthesis script (compress raw journal → pattern updates)
 - Wire knowledge graph into watcher startup prompts
 - GitHub Issue #1: /commands for chatroom control
-- Stability testing harness (spec S6)
-- message-box/ folder for Soren/Atlas/Morgan feedback
 - Combine 3 poll endpoints into single `?action=poll`
 - Mobile sidebar (hamburger toggle)
 - Consolidate schema duplication (initDb + migrateDb)
 - Watcher owner name: parameterize 'Rob' references in router.js, persona.js, curiosity.js
+- message-box/ folder for Soren/Atlas/Morgan feedback
+- Stability testing harness (spec S6)
+- BandPilot OG social card (deferred)
 
 ## Key Context
-- **Starter kit shipped** — `claude-collab-starter.zip` on Desktop, ready to email
-- **OWNER_NAME constant** — single config point in api.php, frontend loads dynamically from API
-- **Participant registry API** — `?action=participants` is now the single source of truth
-- **Batch reactions** — 1 HTTP request instead of 30 per sync cycle
-- **Migration cache** — schema_version check skips ~15 DDL statements per request
-- **DM code removed** — conversations/dm_messages tables, endpoints, helpers all deleted
-- **SME participant removed** — stripped from registries
+- **Guest profiles live** — `GUEST_PROFILES` in config.js, auto-injected by persona.js
+- **Ottawa Valley tone** — all 3 AIs have Valley Register in extraInstructions
+- **Jeans profiled** — blues/guitar/sweary bandmate, auto-detected when he joins as guest
+- **Starter kit shipped** — `claude-collab-starter.zip` on Desktop
+- **OWNER_NAME constant** — single config point in api.php, frontend loads from API
+- **Participant registry API** — `?action=participants` single source of truth
 - **Curiosity system live** — `[CURIOUS]` tags, probability-gated DMs and sharing
-- **Emoji/reaction AI integration** — batch endpoint, race-safe toggle
 - **Morgan has scroll-analyzer** — all 17 tools
 - **Collab-plan mode live** — `audit.js --plan "description"`
 - Smart routing live — keyword classifier
-- Exchange cap at 6 (was 8)
 - PBLS live for all participants
-- Heartbeat API: POST body `{"action":"heartbeat","focused":true}` (not query string)
+- Watcher changes are NOT in this git repo (different directory)
