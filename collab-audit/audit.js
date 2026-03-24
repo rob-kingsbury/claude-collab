@@ -69,7 +69,8 @@ Options:
   --exchange-model <m>   Model for exchange rounds (default: sonnet). Use "opus" for max depth
   --output <path>        Output file path (default: <target>/audit-report.md or plan-review.md)
   --sequential           Disable parallel execution (run all phases sequentially)
-  --soren-only           Run only Soren's pass (skip collaboration)
+  --only "names"         Comma-separated participant names (e.g., "morgan,atlas")
+  --soren-only           Shorthand for --only soren
   --verbose              Show real-time progress
   --help, -h             Show this help
 
@@ -90,7 +91,7 @@ Examples:
     let exchangeModel = DEFAULT_EXCHANGE_MODEL;
     let output = '';
     let exchanges = DEFAULT_EXCHANGES;
-    let sorenOnly = false;
+    let onlyParticipants = null; // null = all, Set of lowercase names = subset
     let verbose = false;
     let sequential = false;
 
@@ -116,7 +117,8 @@ Examples:
                 case '--model': model = args[++i] || DEFAULT_MODEL; break;
                 case '--exchange-model': exchangeModel = args[++i] || DEFAULT_EXCHANGE_MODEL; break;
                 case '--output': output = args[++i] || ''; break;
-                case '--soren-only': sorenOnly = true; break;
+                case '--soren-only': onlyParticipants = new Set(['soren']); break;
+                case '--only': onlyParticipants = new Set((args[++i] || '').toLowerCase().split(',').map(s => s.trim()).filter(Boolean)); break;
                 case '--sequential': sequential = true; break;
                 case '--verbose': verbose = true; break;
             }
@@ -135,7 +137,8 @@ Examples:
                 case '--model': model = args[++i] || DEFAULT_MODEL; break;
                 case '--exchange-model': exchangeModel = args[++i] || DEFAULT_EXCHANGE_MODEL; break;
                 case '--output': output = args[++i] || ''; break;
-                case '--soren-only': sorenOnly = true; break;
+                case '--soren-only': onlyParticipants = new Set(['soren']); break;
+                case '--only': onlyParticipants = new Set((args[++i] || '').toLowerCase().split(',').map(s => s.trim()).filter(Boolean)); break;
                 case '--sequential': sequential = true; break;
                 case '--verbose': verbose = true; break;
             }
@@ -143,7 +146,18 @@ Examples:
         if (!output) output = path.join(targetDir, 'audit-report.md');
     }
 
-    return { targetDir, focus, model, exchangeModel, output, exchanges, sorenOnly, verbose, sequential, planDescription, isPlanMode };
+    // Validate --only names
+    const validNames = new Set(['soren', 'atlas', 'morgan']);
+    if (onlyParticipants) {
+        for (const name of onlyParticipants) {
+            if (!validNames.has(name)) {
+                console.error(`Error: Unknown participant "${name}". Valid: soren, atlas, morgan`);
+                process.exit(1);
+            }
+        }
+    }
+
+    return { targetDir, focus, model, exchangeModel, output, exchanges, onlyParticipants, verbose, sequential, planDescription, isPlanMode };
 }
 
 // --- Persona loader (extracted from watcher/persona.js) ---
@@ -894,7 +908,11 @@ function invokeClaude(prompt, targetDir, model, verbose) {
 // --- Main ---
 
 async function main() {
-    const { targetDir, focus, model, exchangeModel, output, exchanges, sorenOnly, verbose, sequential, planDescription, isPlanMode } = parseArgs();
+    const { targetDir, focus, model, exchangeModel, output, exchanges, onlyParticipants, verbose, sequential, planDescription, isPlanMode } = parseArgs();
+    const includeSoren = !onlyParticipants || onlyParticipants.has('soren');
+    const includeAtlas = !onlyParticipants || onlyParticipants.has('atlas');
+    const includeMorgan = !onlyParticipants || onlyParticipants.has('morgan');
+    const sorenOnly = onlyParticipants && onlyParticipants.size === 1 && onlyParticipants.has('soren');
 
     // Validate target
     if (!fs.existsSync(targetDir)) {
@@ -1014,56 +1032,75 @@ async function main() {
     // === END PLAN MODE ===
     // ============================================================
 
-    // Load all personas upfront
-    const sorenPersona = loadPersona('soren');
-    if (!sorenPersona) {
+    // Load personas for included participants
+    const sorenPersona = includeSoren ? loadPersona('soren') : null;
+    if (includeSoren && !sorenPersona) {
         console.error('Error: Could not load Soren persona from ' + PERSONAS_DIR);
         process.exit(1);
     }
 
-    const atlasPersona = loadPersona('atlas');
-    const morganPersona = loadPersona('morgan');
+    const atlasPersona = includeAtlas ? loadPersona('atlas') : null;
+    if (includeAtlas && !atlasPersona) {
+        console.error('Error: Could not load Atlas persona from ' + PERSONAS_DIR);
+        process.exit(1);
+    }
 
-    const participantCount = morganPersona ? 3 : 2;
-    const totalInvocations = sorenOnly ? 1 : participantCount + (exchanges * participantCount) + 1;
+    const morganPersona = includeMorgan ? loadPersona('morgan') : null;
+
+    const activeParticipants = [includeSoren && 'Soren', includeAtlas && 'Atlas', includeMorgan && morganPersona && 'Morgan'].filter(Boolean);
+    const participantCount = activeParticipants.length;
+    if (participantCount === 0) {
+        console.error('Error: No participants selected');
+        process.exit(1);
+    }
+    const singleParticipant = onlyParticipants && onlyParticipants.size === 1;
+    const totalInvocations = singleParticipant ? 1 : participantCount + (exchanges * participantCount) + 1;
+
+    const auditorLabel = activeParticipants.map(n => {
+        const roles = { Soren: 'code', Atlas: 'architecture', Morgan: 'UX/product' };
+        return `${n} (${roles[n]})`;
+    }).join(' + ');
 
     console.log(`\n=== Collab Audit ===`);
     console.log(`Target:     ${targetDir}`);
     console.log(`Model:      ${model} (initial + synthesis), ${exchangeModel} (exchanges)`);
     console.log(`Focus:      ${focus || '(all areas)'}`);
-    console.log(`Auditors:   ${morganPersona ? 'Soren (code) + Atlas (architecture) + Morgan (UX/product)' : 'Soren (code) + Atlas (architecture)'}`);
-    console.log(`Exchanges:  ${sorenOnly ? 'none (Soren only)' : exchanges + ` rounds (${participantCount}-way)`}`);
+    console.log(`Auditors:   ${auditorLabel}`);
+    console.log(`Exchanges:  ${singleParticipant ? `none (${activeParticipants[0]} only)` : exchanges + ` rounds (${participantCount}-way)`}`);
     console.log(`Parallel:   ${parallelMode ? 'yes (initial scans + exchange rounds)' : 'no (sequential)'}`);
     console.log(`Phases:     ${totalInvocations} claude -p invocations`);
     console.log(`Output:     ${output}`);
     console.log();
 
-    // === Soren-only mode ===
-    if (sorenOnly) {
-        console.log('Phase 1: Soren — initial code-level analysis...');
-        const sorenPrompt = buildSorenInitialPrompt(sorenPersona, targetDir, focus);
-        if (verbose) console.log(`  Prompt: ${sorenPrompt.length} chars (${estimateTokens(sorenPrompt)} est. tokens)`);
-        let sorenFindings;
+    // === Single-participant mode ===
+    if (singleParticipant) {
+        const name = activeParticipants[0];
+        const persona = name === 'Soren' ? sorenPersona : name === 'Atlas' ? atlasPersona : morganPersona;
+        // Use the appropriate initial prompt builder
+        const promptBuilders = {
+            Soren: () => buildSorenInitialPrompt(sorenPersona, targetDir, focus),
+            Atlas: () => buildAtlasIndependentPrompt(atlasPersona, targetDir, focus),
+            Morgan: () => buildMorganIndependentPrompt(morganPersona, targetDir, focus),
+        };
+        console.log(`Phase 1: ${name} — initial analysis...`);
+        const prompt = promptBuilders[name]();
+        if (verbose) console.log(`  Prompt: ${prompt.length} chars (${estimateTokens(prompt)} est. tokens)`);
+        let findings;
         try {
-            sorenFindings = await invokeClaude(sorenPrompt, targetDir, model, verbose);
-            console.log(`  Soren complete (${sorenFindings.length} chars)`);
+            findings = await invokeClaude(prompt, targetDir, model, verbose);
+            console.log(`  ${name} complete (${findings.length} chars)`);
         } catch (e) {
-            console.error(`  Soren failed: ${e.message}`);
+            console.error(`  ${name} failed: ${e.message}`);
             process.exit(1);
         }
-        const report = `# Codebase Audit — Soren's Analysis\n**Target**: ${targetDir}\n**Date**: ${new Date().toISOString().split('T')[0]}\n\n${sorenFindings}\n`;
+        const report = `# Codebase Audit — ${name}'s Analysis\n**Target**: ${targetDir}\n**Date**: ${new Date().toISOString().split('T')[0]}\n\n${findings}\n`;
         fs.writeFileSync(output, report, 'utf-8');
         console.log(`\nReport written to: ${output}`);
         return;
     }
 
-    // Check required personas for collaborative mode
-    if (!atlasPersona) {
-        console.error('Error: Could not load Atlas persona from ' + PERSONAS_DIR);
-        process.exit(1);
-    }
-    if (!morganPersona) {
-        console.log('Warning: Could not load Morgan persona — proceeding with Soren + Atlas only');
+    if (includeMorgan && !morganPersona) {
+        console.log('Warning: Could not load Morgan persona — proceeding without Morgan');
     }
 
     // === Phase 1-3: Initial scans (parallel or sequential) ===
@@ -1072,32 +1109,39 @@ async function main() {
 
     if (parallelMode) {
         // --- PARALLEL INITIAL SCANS ---
-        // All three read the codebase independently at the same time
-        console.log('Phase 1-3: Parallel initial scans — Soren + Atlas + Morgan...');
+        console.log(`Phase 1-${participantCount}: Parallel initial scans — ${activeParticipants.join(' + ')}...`);
 
-        const sorenPrompt = buildSorenInitialPrompt(sorenPersona, targetDir, focus);
-        // Atlas gets an independent initial prompt (no Soren findings to review yet)
-        const atlasPrompt = buildAtlasIndependentPrompt(atlasPersona, targetDir, focus);
-        if (verbose) {
-            console.log(`  Soren prompt: ${sorenPrompt.length} chars (${estimateTokens(sorenPrompt)} est. tokens)`);
-            console.log(`  Atlas prompt: ${atlasPrompt.length} chars (${estimateTokens(atlasPrompt)} est. tokens)`);
+        const scanPromises = [];
+        const scanLabels = [];
+
+        if (includeSoren) {
+            const sorenPrompt = buildSorenInitialPrompt(sorenPersona, targetDir, focus);
+            if (verbose) console.log(`  Soren prompt: ${sorenPrompt.length} chars (${estimateTokens(sorenPrompt)} est. tokens)`);
+            scanLabels.push('soren');
+            scanPromises.push(
+                invokeClaude(sorenPrompt, targetDir, model, false).then(r => {
+                    console.log(`  Soren complete (${r.length} chars)`);
+                    return r;
+                }).catch(e => { console.error(`  Soren failed: ${e.message}`); return null; })
+            );
         }
 
-        const scanPromises = [
-            invokeClaude(sorenPrompt, targetDir, model, false).then(r => {
-                console.log(`  Soren complete (${r.length} chars)`);
-                return r;
-            }).catch(e => { console.error(`  Soren failed: ${e.message}`); return null; }),
+        if (includeAtlas) {
+            const atlasPrompt = buildAtlasIndependentPrompt(atlasPersona, targetDir, focus);
+            if (verbose) console.log(`  Atlas prompt: ${atlasPrompt.length} chars (${estimateTokens(atlasPrompt)} est. tokens)`);
+            scanLabels.push('atlas');
+            scanPromises.push(
+                invokeClaude(atlasPrompt, targetDir, model, false).then(r => {
+                    console.log(`  Atlas complete (${r.length} chars)`);
+                    return r;
+                }).catch(e => { console.error(`  Atlas failed: ${e.message}`); return null; })
+            );
+        }
 
-            invokeClaude(atlasPrompt, targetDir, model, false).then(r => {
-                console.log(`  Atlas complete (${r.length} chars)`);
-                return r;
-            }).catch(e => { console.error(`  Atlas failed: ${e.message}`); return null; }),
-        ];
-
-        if (morganPersona) {
+        if (includeMorgan && morganPersona) {
             const morganPrompt = buildMorganIndependentPrompt(morganPersona, targetDir, focus);
             if (verbose) console.log(`  Morgan prompt: ${morganPrompt.length} chars (${estimateTokens(morganPrompt)} est. tokens)`);
+            scanLabels.push('morgan');
             scanPromises.push(
                 invokeClaude(morganPrompt, targetDir, model, false).then(r => {
                     console.log(`  Morgan complete (${r.length} chars)`);
@@ -1107,15 +1151,18 @@ async function main() {
         }
 
         const results = await Promise.all(scanPromises);
-        sorenFindings = results[0];
-        atlasReview = results[1];
-        morganReview = results[2] || '';
+        for (let i = 0; i < scanLabels.length; i++) {
+            if (scanLabels[i] === 'soren') sorenFindings = results[i] || '';
+            if (scanLabels[i] === 'atlas') atlasReview = results[i] || '';
+            if (scanLabels[i] === 'morgan') morganReview = results[i] || '';
+        }
 
-        if (!sorenFindings) {
+        // Fail if any included participant's scan failed
+        if (includeSoren && !sorenFindings) {
             console.error('Soren\'s initial scan failed — cannot proceed');
             process.exit(1);
         }
-        if (!atlasReview) {
+        if (includeAtlas && !atlasReview) {
             console.error('Atlas\'s initial scan failed — cannot proceed');
             process.exit(1);
         }
@@ -1125,34 +1172,45 @@ async function main() {
 
     } else {
         // --- SEQUENTIAL INITIAL SCANS (original behavior) ---
-        console.log('Phase 1: Soren — initial code-level analysis...');
-        const sorenPrompt = buildSorenInitialPrompt(sorenPersona, targetDir, focus);
-        if (verbose) console.log(`  Prompt: ${sorenPrompt.length} chars (${estimateTokens(sorenPrompt)} est. tokens)`);
-        try {
-            sorenFindings = await invokeClaude(sorenPrompt, targetDir, model, verbose);
-            console.log(`  Soren complete (${sorenFindings.length} chars)`);
-        } catch (e) {
-            console.error(`  Soren failed: ${e.message}`);
-            process.exit(1);
-        }
-
-        console.log('Phase 2: Atlas — reviewing Soren\'s findings...');
-        const atlasReviewPrompt = buildAtlasReviewPrompt(atlasPersona, targetDir, sorenFindings, focus);
-        if (verbose) console.log(`  Prompt: ${atlasReviewPrompt.length} chars (${estimateTokens(atlasReviewPrompt)} est. tokens)`);
-        try {
-            atlasReview = await invokeClaude(atlasReviewPrompt, targetDir, model, verbose);
-            console.log(`  Atlas complete (${atlasReview.length} chars)`);
-        } catch (e) {
-            console.error(`  Atlas review failed: ${e.message}`);
-            process.exit(1);
-        }
-
-        if (morganPersona) {
-            console.log('Phase 3: Morgan — UX/product review...');
-            const morganReviewPrompt = buildMorganReviewPrompt(morganPersona, targetDir, sorenFindings, atlasReview, focus);
-            if (verbose) console.log(`  Prompt: ${morganReviewPrompt.length} chars (${estimateTokens(morganReviewPrompt)} est. tokens)`);
+        let phase = 1;
+        if (includeSoren) {
+            console.log(`Phase ${phase}: Soren — initial code-level analysis...`);
+            const sorenPrompt = buildSorenInitialPrompt(sorenPersona, targetDir, focus);
+            if (verbose) console.log(`  Prompt: ${sorenPrompt.length} chars (${estimateTokens(sorenPrompt)} est. tokens)`);
             try {
-                morganReview = await invokeClaude(morganReviewPrompt, targetDir, model, verbose);
+                sorenFindings = await invokeClaude(sorenPrompt, targetDir, model, verbose);
+                console.log(`  Soren complete (${sorenFindings.length} chars)`);
+            } catch (e) {
+                console.error(`  Soren failed: ${e.message}`);
+                process.exit(1);
+            }
+            phase++;
+        }
+
+        if (includeAtlas) {
+            console.log(`Phase ${phase}: Atlas — ${includeSoren ? 'reviewing Soren\'s findings' : 'initial architecture analysis'}...`);
+            const atlasPrompt = includeSoren
+                ? buildAtlasReviewPrompt(atlasPersona, targetDir, sorenFindings, focus)
+                : buildAtlasIndependentPrompt(atlasPersona, targetDir, focus);
+            if (verbose) console.log(`  Prompt: ${atlasPrompt.length} chars (${estimateTokens(atlasPrompt)} est. tokens)`);
+            try {
+                atlasReview = await invokeClaude(atlasPrompt, targetDir, model, verbose);
+                console.log(`  Atlas complete (${atlasReview.length} chars)`);
+            } catch (e) {
+                console.error(`  Atlas failed: ${e.message}`);
+                process.exit(1);
+            }
+            phase++;
+        }
+
+        if (includeMorgan && morganPersona) {
+            console.log(`Phase ${phase}: Morgan — UX/product review...`);
+            const morganPrompt = (includeSoren || includeAtlas)
+                ? buildMorganReviewPrompt(morganPersona, targetDir, sorenFindings, atlasReview, focus)
+                : buildMorganIndependentPrompt(morganPersona, targetDir, focus);
+            if (verbose) console.log(`  Prompt: ${morganPrompt.length} chars (${estimateTokens(morganPrompt)} est. tokens)`);
+            try {
+                morganReview = await invokeClaude(morganPrompt, targetDir, model, verbose);
                 console.log(`  Morgan complete (${morganReview.length} chars)`);
             } catch (e) {
                 console.error(`  Morgan review failed: ${e.message}`);
@@ -1162,18 +1220,25 @@ async function main() {
     }
 
     // Build conversation history for exchanges
-    let conversationHistory = `=== SOREN — Initial Analysis ===\n${sorenFindings}\n\n=== ATLAS — ${parallelMode ? 'Initial Analysis' : 'Initial Review'} ===\n${atlasReview}`;
-    if (morganReview) {
-        conversationHistory += `\n\n=== MORGAN — ${parallelMode ? 'Initial Analysis' : 'UX/Product Review'} ===\n${morganReview}`;
-    }
+    const historyParts = [];
+    if (sorenFindings) historyParts.push(`=== SOREN — Initial Analysis ===\n${sorenFindings}`);
+    if (atlasReview) historyParts.push(`=== ATLAS — ${parallelMode ? 'Initial Analysis' : 'Initial Review'} ===\n${atlasReview}`);
+    if (morganReview) historyParts.push(`=== MORGAN — ${parallelMode ? 'Initial Analysis' : 'UX/Product Review'} ===\n${morganReview}`);
+    let conversationHistory = historyParts.join('\n\n');
 
     // === Phase 4: Collaborative exchange loop ===
-    const participants = [
-        { name: 'Soren', persona: sorenPersona, otherNames: morganPersona ? ['Atlas', 'Morgan'] : ['Atlas'] },
-        { name: 'Atlas', persona: atlasPersona, otherNames: morganPersona ? ['Soren', 'Morgan'] : ['Soren'] },
-    ];
-    if (morganPersona) {
-        participants.push({ name: 'Morgan', persona: morganPersona, otherNames: ['Soren', 'Atlas'] });
+    const participants = [];
+    if (includeSoren && sorenPersona) {
+        const others = activeParticipants.filter(n => n !== 'Soren');
+        participants.push({ name: 'Soren', persona: sorenPersona, otherNames: others });
+    }
+    if (includeAtlas && atlasPersona) {
+        const others = activeParticipants.filter(n => n !== 'Atlas');
+        participants.push({ name: 'Atlas', persona: atlasPersona, otherNames: others });
+    }
+    if (includeMorgan && morganPersona) {
+        const others = activeParticipants.filter(n => n !== 'Morgan');
+        participants.push({ name: 'Morgan', persona: morganPersona, otherNames: others });
     }
 
     for (let round = 1; round <= exchanges; round++) {
@@ -1247,9 +1312,11 @@ async function main() {
         }
     }
 
-    // === Phase 5: Atlas produces final synthesized report ===
-    console.log('Synthesis: Atlas — producing final report...');
-    const synthesisPrompt = buildSynthesisPrompt(atlasPersona, targetDir, conversationHistory, focus);
+    // === Phase 5: Synthesis — prefer Atlas, fall back to first available participant ===
+    const synthesizer = atlasPersona || sorenPersona || morganPersona;
+    const synthesizerName = atlasPersona ? 'Atlas' : sorenPersona ? 'Soren' : 'Morgan';
+    console.log(`Synthesis: ${synthesizerName} — producing final report...`);
+    const synthesisPrompt = buildSynthesisPrompt(synthesizer, targetDir, conversationHistory, focus);
     if (verbose) console.log(`  Prompt: ${synthesisPrompt.length} chars (${estimateTokens(synthesisPrompt)} est. tokens)`);
 
     let finalReport;
@@ -1260,7 +1327,7 @@ async function main() {
         console.error(`  Synthesis failed: ${e.message}`);
         console.log('  Retrying synthesis with condensed context...');
         try {
-            const condensedPrompt = buildCondensedSynthesisPrompt(atlasPersona, targetDir, conversationHistory, focus);
+            const condensedPrompt = buildCondensedSynthesisPrompt(synthesizer, targetDir, conversationHistory, focus);
             if (verbose) console.log(`  Condensed prompt: ${condensedPrompt.length} chars (${estimateTokens(condensedPrompt)} est. tokens)`);
             finalReport = await invokeClaude(condensedPrompt, targetDir, model, verbose);
             console.log(`  Condensed synthesis complete (${finalReport.length} chars)`);
