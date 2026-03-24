@@ -24,8 +24,19 @@ const path = require('path');
 
 // --- Configuration ---
 
-const CLAUDE_CLI_JS = process.env.CLAUDE_CLI_JS || path.join(path.dirname(process.execPath), 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js');
-const PERSONAS_DIR = process.env.COLLAB_PERSONAS_DIR || path.resolve(__dirname, '..', '..', 'personas');
+const CLAUDE_CLI_JS = (() => {
+  if (process.env.CLAUDE_CLI_JS) return process.env.CLAUDE_CLI_JS;
+  // Try npm global root (correct on Windows where global modules live in AppData)
+  try {
+    const { execSync } = require('child_process');
+    const globalRoot = execSync('npm root -g', { encoding: 'utf8' }).trim();
+    const globalPath = path.join(globalRoot, '@anthropic-ai', 'claude-code', 'cli.js');
+    if (fs.existsSync(globalPath)) return globalPath;
+  } catch (e) { /* fall through */ }
+  // Fallback: co-located with node binary (Linux/macOS default installs)
+  return path.join(path.dirname(process.execPath), 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js');
+})();
+const PERSONAS_DIR = process.env.COLLAB_PERSONAS_DIR || 'c:\\claude-collab\\personas';
 const DEFAULT_MODEL = 'opus';
 const DEFAULT_EXCHANGE_MODEL = 'sonnet'; // Exchange rounds use faster model by default
 const MAX_TURNS = 25;

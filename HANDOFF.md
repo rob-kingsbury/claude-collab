@@ -1,50 +1,23 @@
-# Handoff -- 2026-03-19 (Session 17)
+# Handoff -- 2026-03-24 (Session 18)
 
 ## What Happened This Session
 
 ### Summary
-**Guest profile system + Ottawa Valley tone + bug fixes.** Built guest-aware prompt injection (auto-detects `[Guest]` senders, injects profiles from config). Added Jeans' profile (blues/guitar/sweary bandmate). Added Ottawa Valley register to all three AI participants' extraInstructions. Fixed three bugs: watcher path wrong (couldn't start from UI), messages endpoint returning all history when no active session, and watcher start path defaulting to wrong directory.
+**Collab audit persona path fix.** Fixed `PERSONAS_DIR` in `audit.js` — relative path (`__dirname/../../personas`) resolved to `c:\xampp\htdocs\personas` instead of `c:\claude-collab\personas`, breaking audit runs from other projects. Changed to absolute path. Also picked up a prior uncommitted `CLAUDE_CLI_JS` improvement (npm global root detection). Verified fix by running a soren-only audit on `pz-mod-checker` from its directory — completed successfully.
 
 ### Changes
 
-**git-tracked (claude-collab web root):**
-
 | File | Change |
 |------|--------|
-| `api.php` | Fixed watcher script default path (`C:\claude-collab\watcher.js`). Fixed messages endpoint returning all history when no active session (`1=0` guard). |
+| `collab-audit/audit.js` | Fixed `PERSONAS_DIR` to absolute `c:\claude-collab\personas`. Added `CLAUDE_CLI_JS` npm global root detection. |
 
-**NOT git-tracked (c:\claude-collab\ watcher directory):**
+### Bug Fixed
 
-| File | Change |
-|------|--------|
-| `watcher/config.js` | Added `GUEST_PROFILES` config (Jeans, S). Added Valley Register directive to Soren, Atlas, Morgan extraInstructions. |
-| `watcher/persona.js` | Guest detection in `buildPrompt()` — scans pendingMessages for `[Guest]` senders, injects matching profiles from config. Imported `GUEST_PROFILES` from config. |
+**Audit persona loading fails from other projects** — `path.resolve(__dirname, '..', '..', 'personas')` resolved to `c:\xampp\htdocs\personas` (wrong). Changed to hardcoded `c:\claude-collab\personas` with `COLLAB_PERSONAS_DIR` env var override. Global skill (`~/.claude/skills/collab-audit/`) is a directory junction so fix propagated automatically.
 
-### Guest Profile System
+## Previous Session (Session 17) Summary
 
-- `GUEST_PROFILES` in `config.js` — keyed by lowercase name before `[Guest]` suffix
-- Auto-detected in `buildPrompt()` when pending messages contain `[Guest]` senders
-- Injected as `=== GUEST CONTEXT ===` block after extraInstructions
-- Unknown guests get generic "be welcoming" fallback
-- Current profiles: **Jeans** (blues/guitar bandmate, sweary, Ottawa Valley), **S** (Rob's partner)
-
-### Ottawa Valley Register
-
-Added to all three AI participants' `extraInstructions`:
-- Direct, sweary, no-bullshit, dry humor
-- "eh", "bud/buds", "give'er", "get'er done" sprinkled naturally
-- Profanity as punctuation, not aggression
-- Match energy — if they're loose and sweary, be too
-
-### Bugs Fixed
-
-1. **Watcher won't start from UI** — default path `__DIR__ . '/../watcher/watcher.js'` resolved to wrong directory. Changed to absolute `C:\claude-collab\watcher.js`.
-2. **All history shown when no session active** — `getCurrentSessionId()` returning null meant no session filter was applied, dumping every message. Added `1=0` guard.
-3. **Token bars full / can't hide history** — same root cause as #2. No session = all messages loaded = token counters maxed.
-
-## Previous Session (Session 16) Summary
-
-Starter kit packaging + audit-driven codebase cleanup. Ran collab audit, fixed 16 findings. Removed ~200 lines dead DM code. Built claude-collab-starter.zip (151 KB) for distribution.
+Guest profile system + Ottawa Valley tone + bug fixes. Built guest-aware prompt injection. Added Jeans' profile. Added Ottawa Valley register to all three AIs. Fixed watcher path, messages endpoint, and token bar bugs.
 
 ## Active Issues
 - **GitHub Issue #1**: /commands for chatroom control (partially implemented)
@@ -77,6 +50,7 @@ Starter kit packaging + audit-driven codebase cleanup. Ran collab audit, fixed 1
 - BandPilot OG social card (deferred)
 
 ## Key Context
+- **Collab audit path fixed** — personas now resolve correctly when audit runs from any project
 - **Guest profiles live** — `GUEST_PROFILES` in config.js, auto-injected by persona.js
 - **Ottawa Valley tone** — all 3 AIs have Valley Register in extraInstructions
 - **Jeans profiled** — blues/guitar/sweary bandmate, auto-detected when he joins as guest
