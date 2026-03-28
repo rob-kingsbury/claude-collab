@@ -89,7 +89,8 @@ Options:
 - `--exchange-model sonnet` — model for exchange rounds (default: sonnet, use "opus" for max depth)
 - `--output <path>` — custom output path (default: `<target>/audit-report.md`)
 - `--sequential` — disable parallel execution (run all phases one at a time)
-- `--soren-only` — skip collaboration entirely (fast single pass)
+- `--only "names"` — run a subset of participants, e.g. `--only "morgan,atlas"` or `--only "soren"`
+- `--soren-only` — shorthand for `--only soren` (fast single pass)
 - `--verbose` — show real-time progress dots
 
 **Performance**: Default mode runs initial scans in parallel and exchange rounds in parallel, with Sonnet for exchanges. With 2 exchange rounds, expect **8-15 minutes** depending on codebase size. Use `--sequential` if you want the original pipeline where each phase sees prior findings before starting.
@@ -120,6 +121,9 @@ User: "/collab-audit c:\xampp\htdocs\ai-ta"
 
 User: "Quick audit, just Soren's pass"
 → node "c:\xampp\htdocs\claude-collab\collab-audit\audit.js" "C:\xampp\htdocs\current-project" --soren-only --verbose
+
+User: "Run Morgan and Atlas only, skip Soren"
+→ node "c:\xampp\htdocs\claude-collab\collab-audit\audit.js" "C:\xampp\htdocs\current-project" --only "morgan,atlas" --verbose
 
 User: "Do a pre-flight plan review for adding notifications to my app"
 → node "c:\xampp\htdocs\claude-collab\collab-audit\audit.js" --plan "Add a real-time notification system to the dashboard with in-app alerts and email digests" --context "C:\xampp\htdocs\current-project" --verbose

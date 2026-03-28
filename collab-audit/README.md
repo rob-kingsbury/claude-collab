@@ -223,6 +223,9 @@ node c:\xampp\htdocs\claude-collab\collab-audit\audit.js c:\xampp\htdocs\my-proj
 # Quick pass (Soren only, no collaboration)
 node c:\xampp\htdocs\claude-collab\collab-audit\audit.js c:\xampp\htdocs\my-project --soren-only
 
+# Subset of participants (Morgan + Atlas only, no Soren)
+node c:\xampp\htdocs\claude-collab\collab-audit\audit.js c:\xampp\htdocs\my-project --only "morgan,atlas"
+
 # Custom output location
 node c:\xampp\htdocs\claude-collab\collab-audit\audit.js c:\xampp\htdocs\my-project --output c:\audits\report.md
 
@@ -240,7 +243,8 @@ node c:\xampp\htdocs\claude-collab\collab-audit\audit.js c:\xampp\htdocs\my-proj
 | `--exchange-model <m>` | sonnet | Model for exchange rounds (use "opus" for max depth) |
 | `--output <path>` | `<target>/audit-report.md` | Where to write the report |
 | `--sequential` | false | Disable parallel execution |
-| `--soren-only` | false | Skip collaboration (single pass) |
+| `--only "names"` | all | Comma-separated subset: `"morgan,atlas"`, `"soren,morgan"`, `"atlas"`, etc. |
+| `--soren-only` | false | Shorthand for `--only soren` (single pass, no exchanges) |
 | `--verbose` | false | Show progress during invocation |
 
 ### Tool Access
