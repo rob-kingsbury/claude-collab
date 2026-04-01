@@ -1,23 +1,21 @@
-# Handoff -- 2026-03-24 (Session 18)
+# Handoff -- 2026-04-01 (Session 19)
 
 ## What Happened This Session
 
 ### Summary
-**Collab audit persona path fix.** Fixed `PERSONAS_DIR` in `audit.js` — relative path (`__dirname/../../personas`) resolved to `c:\xampp\htdocs\personas` instead of `c:\claude-collab\personas`, breaking audit runs from other projects. Changed to absolute path. Also picked up a prior uncommitted `CLAUDE_CLI_JS` improvement (npm global root detection). Verified fix by running a soren-only audit on `pz-mod-checker` from its directory — completed successfully.
+**Collab audit fixes: persona path + participant selection.** Fixed `PERSONAS_DIR` in `audit.js` — relative path resolved wrong when audit runs from other projects. Added `--only` flag for participant selection (e.g., `--only "morgan,atlas"`). Verified all combos work: solo participants, pairs, invalid names rejected. Updated SKILL.md and README.md with `--only` docs.
 
 ### Changes
 
 | File | Change |
 |------|--------|
-| `collab-audit/audit.js` | Fixed `PERSONAS_DIR` to absolute `c:\claude-collab\personas`. Added `CLAUDE_CLI_JS` npm global root detection. |
+| `collab-audit/audit.js` | Fixed `PERSONAS_DIR` to absolute `c:\claude-collab\personas`. Added `CLAUDE_CLI_JS` npm global root detection. Added `--only` flag for participant subset selection. |
+| `collab-audit/SKILL.md` | Documented `--only` flag with examples. |
+| `collab-audit/README.md` | Documented `--only` flag. |
 
-### Bug Fixed
+## Previous Session (Session 18) Summary
 
-**Audit persona loading fails from other projects** — `path.resolve(__dirname, '..', '..', 'personas')` resolved to `c:\xampp\htdocs\personas` (wrong). Changed to hardcoded `c:\claude-collab\personas` with `COLLAB_PERSONAS_DIR` env var override. Global skill (`~/.claude/skills/collab-audit/`) is a directory junction so fix propagated automatically.
-
-## Previous Session (Session 17) Summary
-
-Guest profile system + Ottawa Valley tone + bug fixes. Built guest-aware prompt injection. Added Jeans' profile. Added Ottawa Valley register to all three AIs. Fixed watcher path, messages endpoint, and token bar bugs.
+Collab audit persona path fix. Fixed `PERSONAS_DIR` relative path that broke audit runs from other projects. Added `CLAUDE_CLI_JS` npm global root detection. Verified fix via soren-only audit on pz-mod-checker.
 
 ## Active Issues
 - **GitHub Issue #1**: /commands for chatroom control (partially implemented)
@@ -50,15 +48,11 @@ Guest profile system + Ottawa Valley tone + bug fixes. Built guest-aware prompt 
 - BandPilot OG social card (deferred)
 
 ## Key Context
+- **`--only` flag live** — select any combo of soren/atlas/morgan for audits
 - **Collab audit path fixed** — personas now resolve correctly when audit runs from any project
+- **Global skill is a junction** — `~/.claude/skills/collab-audit/` → repo's `collab-audit/`, always in sync
 - **Guest profiles live** — `GUEST_PROFILES` in config.js, auto-injected by persona.js
 - **Ottawa Valley tone** — all 3 AIs have Valley Register in extraInstructions
-- **Jeans profiled** — blues/guitar/sweary bandmate, auto-detected when he joins as guest
-- **Starter kit shipped** — `claude-collab-starter.zip` on Desktop
-- **OWNER_NAME constant** — single config point in api.php, frontend loads from API
-- **Participant registry API** — `?action=participants` single source of truth
-- **Curiosity system live** — `[CURIOUS]` tags, probability-gated DMs and sharing
-- **Morgan has scroll-analyzer** — all 17 tools
 - **Collab-plan mode live** — `audit.js --plan "description"`
 - Smart routing live — keyword classifier
 - PBLS live for all participants
