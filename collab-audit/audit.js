@@ -72,6 +72,43 @@ Every finding in Critical/High/Medium/Low/UX sections MUST use this structure:
 - \`disputed\`: at least one auditor pushed back on the finding. Show both sides in the Agreement line and state the final resolution. This is the equivalent of Crob's distinct_objects > 1 signal — surface it, don't average it away.
 
 **Do not silently drop disputed findings.** If the team couldn't agree, say so and show the evidence each side cited. Human readers need to see disagreement to make their own call.
+
+### Examples (follow this exact format)
+
+**Example 1 — corroborated finding (Crob +0.15 equivalent)**
+
+**[H1] SQL injection in user search endpoint**
+- **Severity**: high
+- **Evidence**: \`api/search.php:42\`, \`api/search.php:58\`
+- **Confidence**: corroborated
+- **Raised by**: Soren (initial scan)
+- **Agreement**: Atlas independently flagged the same line in round 1 after grepping for \`$_GET\` usage; Morgan confirmed user impact (exposes customer emails). Unanimous.
+- **Description**: \`api/search.php:42\` concatenates \`$_GET['q']\` directly into a SQL string with no parameterization or escaping. An attacker can read or drop tables via crafted query parameters.
+- **Fix**: Replace the raw concat with a prepared statement. \`$stmt = $pdo->prepare('SELECT * FROM users WHERE name LIKE ?'); $stmt->execute(['%' . $_GET['q'] . '%']);\`
+
+**Example 2 — disputed finding (Crob distinct_objects > 1 equivalent)**
+
+**[M3] Caching layer complexity may not be justified**
+- **Severity**: medium
+- **Evidence**: \`lib/cache/RedisStore.php:1-180\`, \`lib/cache/MemcachedStore.php:1-165\`, \`config/cache.php:12-45\`
+- **Confidence**: disputed
+- **Raised by**: Atlas (initial scan)
+- **Agreement**: Atlas argued the dual-backend abstraction is over-engineered for current traffic (~500 req/day per logs). Soren pushed back in round 1, citing the migration plan in \`docs/SCALING.md:88\` that projects 10x growth by Q3 — the abstraction exists for that future. Morgan sided with Atlas on developer-experience grounds (new contributors have to learn both backends to debug anything). **Final resolution**: keep as-is, but document the growth assumption in \`lib/cache/README.md\` so the complexity is justified in-line. Soren's argument won on the technical merits, Morgan's concern stays valid as a documentation gap.
+- **Description**: The codebase maintains parallel Redis and Memcached backends behind a \`CacheStoreInterface\`, with feature-parity enforcement tests. At current traffic this is ~250 lines of abstraction serving one active backend.
+- **Fix**: Document the scaling justification in \`lib/cache/README.md\` (the "why" is currently only in a separate scaling doc). No code change required — the team agreed the abstraction stays.
+
+**Example 3 — observed finding (single-source baseline)**
+
+**[L4] Missing ARIA label on search icon button**
+- **Severity**: low
+- **Evidence**: \`templates/header.php:24\`
+- **Confidence**: observed
+- **Raised by**: Morgan (initial scan)
+- **Agreement**: Morgan verified with NVDA screen reader simulation. Soren and Atlas did not comment — accessibility is Morgan's lane and neither had reason to challenge.
+- **Description**: The search icon in the header is a \`<button>\` with only an SVG child. Screen readers announce it as "button, button" with no context.
+- **Fix**: Add \`aria-label="Search"\` to the button element at \`templates/header.php:24\`.
+
+**Notice**: in Example 2, the team couldn't converge on one answer so the finding was marked \`disputed\` and both sides were documented. The \`Fix\` field still gives clear guidance (document the justification). Disputed does not mean "can't act" — it means "act with eyes open."
 `;
 
 
