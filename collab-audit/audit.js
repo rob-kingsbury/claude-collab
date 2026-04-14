@@ -46,6 +46,35 @@ const CONTEXT_WINDOW_TOKENS = 200000;
 const PERSONA_BUDGET_RATIO = 0.15; // Slightly lower than chatroom — leave room for codebase
 const PERSONA_BUDGET_TOKENS = Math.floor(CONTEXT_WINDOW_TOKENS * PERSONA_BUDGET_RATIO);
 
+// --- Finding annotation format ---
+// Borrowed from Crob's source-aware confidence model: every audit finding carries
+// a confidence tier and provenance trail so readers can weight findings by how
+// well-corroborated they are across auditors. See crob/docs/FORMAT.md for the
+// underlying epistemic model.
+const ANNOTATED_FINDING_FORMAT = `
+### Annotated Finding Format (REQUIRED for every finding)
+
+Every finding in Critical/High/Medium/Low/UX sections MUST use this structure:
+
+**[ID] Title**
+- **Severity**: critical | high | medium | low
+- **Evidence**: \`path/to/file.ext:123\`, \`other/file.ext:42-58\` (specific file:line refs)
+- **Confidence**: \`provisional\` | \`observed\` | \`corroborated\` | \`disputed\`
+- **Raised by**: which auditor first flagged it (Soren / Atlas / Morgan) and in which phase (initial / round N)
+- **Agreement**: who corroborated, who challenged, final resolution if disputed
+- **Description**: what is wrong and why it matters
+- **Fix**: specific remediation with file:line references
+
+**Confidence tier rules**:
+- \`provisional\`: one auditor flagged it with hedging language ("might", "possibly", "likely") OR without direct file verification. Treat as a hypothesis.
+- \`observed\`: one auditor verified via file read/grep, no cross-auditor comment. Single-source fact.
+- \`corroborated\`: 2+ auditors independently verified from different angles, OR one raised + another confirmed in an exchange round. This is the equivalent of Crob's +0.15 cross-source corroboration.
+- \`disputed\`: at least one auditor pushed back on the finding. Show both sides in the Agreement line and state the final resolution. This is the equivalent of Crob's distinct_objects > 1 signal — surface it, don't average it away.
+
+**Do not silently drop disputed findings.** If the team couldn't agree, say so and show the evidence each side cited. Human readers need to see disagreement to make their own call.
+`;
+
+
 // --- Argument parsing ---
 
 function parseArgs() {
@@ -684,7 +713,7 @@ ${planDescription}
 - Recommended build sequence / phasing
 
 ## Risks & Concerns
-[Consolidated risks from all three reviewers. By domain: code / architecture / UX]
+[Consolidated risks from all three reviewers. By domain: code / architecture / UX. For each risk, include: **raised by** (Soren/Atlas/Morgan), **consensus** (unanimous / majority / disputed), and a one-line reason. Disputed risks get both sides shown, not averaged away.]
 
 ## Gaps in the Plan
 [Things the plan doesn't address that it should — with recommended resolution for each]
@@ -715,8 +744,10 @@ FULL AUDIT CONVERSATION:
 ${conversationHistory}
 
 YOUR TASK:
-Produce the definitive audit report. Incorporate all verified findings from all three participants. Note where the team agreed, where you disagreed, and the resolution. Give proper weight to Morgan's UX/product findings — user-facing issues deserve prominence even if the code is technically correct.
+Produce the definitive audit report. Incorporate all verified findings from all three participants. Give proper weight to Morgan's UX/product findings — user-facing issues deserve prominence even if the code is technically correct.
 
+Every finding MUST be annotated with confidence and provenance per the format below. The executive summary should call out counts at each confidence tier so readers can weight findings by corroboration strength, not just severity.
+${ANNOTATED_FINDING_FORMAT}
 Write the report in this exact structure:
 
 # Codebase Audit Report
@@ -726,31 +757,31 @@ Write the report in this exact structure:
 **Method**: Multi-round collaborative exchange with mutual verification
 
 ## Executive Summary
-[2-3 sentences: overall health, critical issues count, top recommendation]
+[2-3 sentences: overall health, critical issues count, top recommendation. Include a confidence breakdown: "N corroborated, M observed, K disputed, J provisional findings across all severities."]
 
 ## Critical & High Severity
-[Each finding with file:line, description, suggested fix, and whether the team agreed]
+[Each finding using the Annotated Finding Format above]
 
 ## Medium Severity
-[Same format]
+[Each finding using the Annotated Finding Format above]
 
 ## Low Severity & Suggestions
-[Same format]
+[Each finding using the Annotated Finding Format above]
 
 ## UX & Product Concerns
-[Morgan's user-facing findings that don't fit neatly into severity buckets — accessibility, workflow gaps, user confusion points]
+[Morgan's user-facing findings that don't fit neatly into severity buckets — accessibility, workflow gaps, user confusion points. Still use the Annotated Finding Format.]
 
 ## Architectural Observations
-[Structural patterns, coupling analysis, broader concerns]
+[Structural patterns, coupling analysis, broader concerns. Annotated findings where applicable; pure observations can be looser.]
 
 ## Disagreements & Resolutions
-[Any findings where participants disagreed, what evidence was presented, and the outcome]
+[List of all findings marked \`disputed\` with the full context: who raised it, who challenged, what evidence each side cited, and the final resolution. This is the escape valve for things the team couldn't agree on — surface them, don't bury them.]
 
 ## Recommended Action Plan
-[Ordered list of what to fix first and why, estimated effort for each]
+[Ordered list of what to fix first and why, estimated effort for each. Prioritize \`corroborated\` findings at Critical/High severity first — they're the most reliable signal.]
 
 ---
-*Generated by Collab Audit (Soren + Atlas + Morgan) — collaborative exchange with extended thinking*
+*Generated by Collab Audit (Soren + Atlas + Morgan) — collaborative exchange with extended thinking and source-aware confidence annotation*
 ${personaBookend(persona)}`;
 }
 
@@ -772,7 +803,9 @@ FINAL EXCHANGE ROUND (findings should be consolidated here):
 ${condensed}
 
 YOUR TASK:
-Produce the definitive audit report from the consolidated findings above. Give proper weight to Morgan's UX/product findings. Use this exact structure:
+Produce the definitive audit report from the consolidated findings above. Give proper weight to Morgan's UX/product findings. Every finding MUST be annotated with confidence and provenance per the format below.
+${ANNOTATED_FINDING_FORMAT}
+Use this exact structure:
 
 # Codebase Audit Report
 **Target**: ${targetDir}
@@ -781,31 +814,31 @@ Produce the definitive audit report from the consolidated findings above. Give p
 **Method**: Multi-round collaborative exchange with mutual verification
 
 ## Executive Summary
-[2-3 sentences: overall health, critical issues count, top recommendation]
+[2-3 sentences: overall health, critical issues count, top recommendation. Include a confidence breakdown: "N corroborated, M observed, K disputed, J provisional findings across all severities."]
 
 ## Critical & High Severity
-[Each finding with file:line, description, suggested fix, and whether the team agreed]
+[Each finding using the Annotated Finding Format above]
 
 ## Medium Severity
-[Same format]
+[Each finding using the Annotated Finding Format above]
 
 ## Low Severity & Suggestions
-[Same format]
+[Each finding using the Annotated Finding Format above]
 
 ## UX & Product Concerns
-[Morgan's user-facing findings — accessibility, workflow gaps, user confusion points]
+[Morgan's user-facing findings — accessibility, workflow gaps, user confusion points. Still use the Annotated Finding Format.]
 
 ## Architectural Observations
-[Structural patterns, coupling analysis, broader concerns]
+[Structural patterns, coupling analysis, broader concerns. Annotated findings where applicable.]
 
 ## Disagreements & Resolutions
-[Any findings where participants disagreed, what evidence was presented, and the outcome]
+[List of all findings marked \`disputed\` with full context. Surface disagreement; don't bury it.]
 
 ## Recommended Action Plan
-[Ordered list of what to fix first and why, estimated effort for each]
+[Ordered list of what to fix first and why. Prioritize \`corroborated\` findings at Critical/High severity first.]
 
 ---
-*Generated by Collab Audit (Soren + Atlas + Morgan) — collaborative exchange with extended thinking*
+*Generated by Collab Audit (Soren + Atlas + Morgan) — collaborative exchange with extended thinking and source-aware confidence annotation*
 ${personaBookend(persona)}`;
 }
 
