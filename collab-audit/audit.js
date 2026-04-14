@@ -46,6 +46,21 @@ const CONTEXT_WINDOW_TOKENS = 200000;
 const PERSONA_BUDGET_RATIO = 0.15; // Slightly lower than chatroom — leave room for codebase
 const PERSONA_BUDGET_TOKENS = Math.floor(CONTEXT_WINDOW_TOKENS * PERSONA_BUDGET_RATIO);
 
+// --- Business context (from --context-note flag) ---
+// Set once by parseArgs, read by every prompt builder via contextSection().
+// Business context calibrates severity judgments — a SQL injection in an
+// internal 3-user tool is not the same severity as one on a 50k-user SaaS.
+let auditContextNote = '';
+
+// Unified helper for the FOCUS AREAS + BUSINESS CONTEXT prompt section.
+// Every prompt builder calls this instead of constructing focusSection inline.
+function contextSection(focus) {
+    const parts = [];
+    if (focus) parts.push(`FOCUS AREAS (prioritize these): ${focus}`);
+    if (auditContextNote) parts.push(`BUSINESS CONTEXT: ${auditContextNote}`);
+    return parts.length ? '\n' + parts.join('\n') + '\n' : '';
+}
+
 // --- Finding annotation format ---
 // Borrowed from Crob's source-aware confidence model: every audit finding carries
 // a confidence tier and provenance trail so readers can weight findings by how
@@ -57,13 +72,15 @@ const ANNOTATED_FINDING_FORMAT = `
 Every finding in Critical/High/Medium/Low/UX sections MUST use this structure:
 
 **[ID] Title**
-- **Severity**: critical | high | medium | low
+- **Severity**: critical | high | medium | low — <one-line rationale: why this level and not a lower one, referencing business context if provided>
 - **Evidence**: \`path/to/file.ext:123\`, \`other/file.ext:42-58\` (specific file:line refs)
 - **Confidence**: \`provisional\` | \`observed\` | \`corroborated\` | \`disputed\`
 - **Raised by**: which auditor first flagged it (Soren / Atlas / Morgan) and in which phase (initial / round N)
 - **Agreement**: who corroborated, who challenged, final resolution if disputed
 - **Description**: what is wrong and why it matters
 - **Fix**: specific remediation with file:line references
+
+**Severity rationale is required, not optional.** "High" with no reason is a lazy rating that readers cannot evaluate. "High because exposes customer emails on a public endpoint" is defensible — a reader can check whether the context matches and disagree if it does not. If BUSINESS CONTEXT was provided at the top of this prompt, severity rationales should cite it explicitly when relevant.
 
 **Confidence tier rules**:
 - \`provisional\`: one auditor flagged it with hedging language ("might", "possibly", "likely") OR without direct file verification. Treat as a hypothesis.
@@ -78,7 +95,7 @@ Every finding in Critical/High/Medium/Low/UX sections MUST use this structure:
 **Example 1 — corroborated finding (Crob +0.15 equivalent)**
 
 **[H1] SQL injection in user search endpoint**
-- **Severity**: high
+- **Severity**: high — exposes customer email addresses on a public endpoint reachable without authentication (per business context, customer PII is the primary asset to protect)
 - **Evidence**: \`api/search.php:42\`, \`api/search.php:58\`
 - **Confidence**: corroborated
 - **Raised by**: Soren (initial scan)
@@ -89,7 +106,7 @@ Every finding in Critical/High/Medium/Low/UX sections MUST use this structure:
 **Example 2 — disputed finding (Crob distinct_objects > 1 equivalent)**
 
 **[M3] Caching layer complexity may not be justified**
-- **Severity**: medium
+- **Severity**: medium — burdens developer experience and onboarding without breaking the system; a refactor would save time long-term but isn't urgent at current traffic
 - **Evidence**: \`lib/cache/RedisStore.php:1-180\`, \`lib/cache/MemcachedStore.php:1-165\`, \`config/cache.php:12-45\`
 - **Confidence**: disputed
 - **Raised by**: Atlas (initial scan)
@@ -100,7 +117,7 @@ Every finding in Critical/High/Medium/Low/UX sections MUST use this structure:
 **Example 3 — observed finding (single-source baseline)**
 
 **[L4] Missing ARIA label on search icon button**
-- **Severity**: low
+- **Severity**: low — blocks screen reader users from understanding the control, but the button is still reachable via keyboard and visible for sighted users; accessibility regression not a functional one
 - **Evidence**: \`templates/header.php:24\`
 - **Confidence**: observed
 - **Raised by**: Morgan (initial scan)
@@ -130,6 +147,7 @@ Options:
   --plan-file <path>     Read plan description from file
   --context <dir>        Codebase context directory for plan mode (optional)
   --focus "areas"        Comma-separated focus areas (e.g., "security,performance,ux")
+  --context-note "text"  Business context for severity calibration (e.g., "Production SaaS, 50k users, PII = emails")
   --exchanges N          Number of exchange rounds (default: ${DEFAULT_EXCHANGES}, range: 1-6)
   --model <model>        Model for initial scans + synthesis (default: opus)
   --exchange-model <m>   Model for exchange rounds (default: sonnet). Use "opus" for max depth
@@ -178,6 +196,7 @@ Examples:
                     break;
                 }
                 case '--context': contextDir = path.resolve(args[++i] || '.'); break;
+                case '--context-note': auditContextNote = args[++i] || ''; break;
                 case '--focus': focus = args[++i] || ''; break;
                 case '--exchanges': exchanges = Math.min(6, Math.max(1, parseInt(args[++i]) || DEFAULT_EXCHANGES)); break;
                 case '--model': model = args[++i] || DEFAULT_MODEL; break;
@@ -199,6 +218,7 @@ Examples:
         for (let i = 1; i < args.length; i++) {
             switch (args[i]) {
                 case '--focus': focus = args[++i] || ''; break;
+                case '--context-note': auditContextNote = args[++i] || ''; break;
                 case '--exchanges': exchanges = Math.min(6, Math.max(1, parseInt(args[++i]) || DEFAULT_EXCHANGES)); break;
                 case '--model': model = args[++i] || DEFAULT_MODEL; break;
                 case '--exchange-model': exchangeModel = args[++i] || DEFAULT_EXCHANGE_MODEL; break;
@@ -309,9 +329,7 @@ function personaBookend(persona) {
 }
 
 function buildSorenInitialPrompt(persona, targetDir, focus) {
-    const focusSection = focus
-        ? `\nFOCUS AREAS (prioritize these): ${focus}\n`
-        : '';
+    const focusSection = contextSection(focus);
 
     return `${personaHeader(persona)}You are Soren, performing Phase 1 of a collaborative codebase audit with Atlas. You have full tool access — use Read, Glob, Grep, and Bash to explore the codebase thoroughly.
 
@@ -343,9 +361,7 @@ ${personaBookend(persona)}`;
 }
 
 function buildAtlasReviewPrompt(persona, targetDir, sorenFindings, focus) {
-    const focusSection = focus
-        ? `\nFOCUS AREAS (prioritize these): ${focus}\n`
-        : '';
+    const focusSection = contextSection(focus);
 
     return `${personaHeader(persona)}You are Atlas, performing Phase 2 of a collaborative codebase audit with Soren. He has completed his initial code-level analysis (below). You have full tool access — use it to verify his findings and examine structural patterns he may have missed.
 
@@ -371,9 +387,7 @@ ${personaBookend(persona)}`;
 }
 
 function buildMorganReviewPrompt(persona, targetDir, sorenFindings, atlasReview, focus) {
-    const focusSection = focus
-        ? `\nFOCUS AREAS (prioritize these): ${focus}\n`
-        : '';
+    const focusSection = contextSection(focus);
 
     return `${personaHeader(persona)}You are Morgan, performing Phase 3 of a collaborative codebase audit with Soren and Atlas. They've completed their initial code-level and structural analyses (below). You have full tool access — use it to examine the codebase from your perspective.
 
@@ -421,9 +435,7 @@ ${personaBookend(persona)}`;
 // Independent prompts for parallel initial scans (no prior findings to reference)
 
 function buildAtlasIndependentPrompt(persona, targetDir, focus) {
-    const focusSection = focus
-        ? `\nFOCUS AREAS (prioritize these): ${focus}\n`
-        : '';
+    const focusSection = contextSection(focus);
 
     return `${personaHeader(persona)}You are Atlas, performing an independent initial analysis as part of a collaborative codebase audit with Soren and Morgan. You have full tool access — use Read, Glob, Grep, and Bash to explore the codebase thoroughly.
 
@@ -456,9 +468,7 @@ ${personaBookend(persona)}`;
 }
 
 function buildMorganIndependentPrompt(persona, targetDir, focus) {
-    const focusSection = focus
-        ? `\nFOCUS AREAS (prioritize these): ${focus}\n`
-        : '';
+    const focusSection = contextSection(focus);
 
     return `${personaHeader(persona)}You are Morgan, performing an independent initial analysis as part of a collaborative codebase audit with Soren and Atlas. You have full tool access — use Read, Glob, Grep, and Bash to explore the codebase thoroughly.
 
@@ -502,9 +512,7 @@ ${personaBookend(persona)}`;
 }
 
 function buildExchangePrompt(persona, name, otherNames, targetDir, conversationHistory, roundNum, totalRounds, focus) {
-    const focusSection = focus
-        ? `\nFOCUS AREAS: ${focus}\n`
-        : '';
+    const focusSection = contextSection(focus);
     const isFinalRound = roundNum === totalRounds;
     const othersStr = otherNames.join(' and ');
 
@@ -515,37 +523,54 @@ ${focusSection}
 CONVERSATION SO FAR:
 ${conversationHistory}
 
+ADVERSARIAL REVIEW POSTURE — READ BEFORE PROCEEDING:
+
+Your default posture is skepticism, not support. Before agreeing with any finding from ${othersStr}:
+1. Open the cited file with Read. Do not trust the quoted snippet.
+2. Check the surrounding context — imports, call sites, config, tests.
+3. Ask: what would have to be true for this finding to be wrong? Then check whether that is true.
+4. Only after that attempt should you decide whether to agree.
+
+Silent agreement without verification is the primary failure mode of this audit format. It produces false corroboration and makes the whole report less trustworthy. When you confirm a finding, state the specific tool action you ran to verify it — e.g., "Read \`api/search.php:40-55\`, confirmed the raw concatenation pattern, checked that no escape function is called upstream in the handler." "Sounds right" is not verification. "Soren already read the file" is not verification.
+
+If after genuine attempt you cannot find anything to challenge in a finding, say so explicitly AND describe what you checked. That is different from silent agreement — it tells the synthesizer that the corroboration is real, not social.
+
+Genuine disagreement is the most valuable signal this audit produces. It identifies findings that need human judgment. Do not smooth over disputes for social comfort. If you disagree, say so clearly and cite the specific evidence that drove your position.
+
 YOUR TASK FOR THIS ROUND:
 ${isFinalRound ? `This is the FINAL exchange round. Produce a consolidated findings table that will feed synthesis.
 
 Structure your response as:
 
-### Confirmed Findings (all agree)
-[Number each finding. file:line, severity, one-line description. Do NOT re-explain — just list.]
+### Confirmed Findings (all agree, verified by tool action)
+[Number each finding. file:line, severity, one-line description, and a short **Verified by** note: which tool action you ran. Do NOT re-explain the finding — just list and verify.]
 
 ### Revised Findings (severity or description changed)
-[What changed and why, with evidence.]
+[What changed and why, with evidence from tool action.]
 
 ### Retracted Findings (false positives removed)
-[Which findings were dropped and why.]
+[Which findings were dropped and why, with the evidence that overturned them.]
 
 ### New Findings (discovered this round)
 [Full detail: file:line, severity, description, fix.]
 
 ### Unresolved Disagreements
-[Any remaining disputes with each side's final position.]` :
+[Any remaining disputes with each side's final position and the evidence each cited. Do not bury these.]` :
 `Organize your response into these categories:
 
-### Confirmed (reference by number, no re-explanation needed)
+### Confirmed (reference by number + state your verification)
+For each confirmed finding, cite the specific tool action you ran to verify it. Format: "Finding #3 — verified via Read of \`src/auth.js:88-102\`, confirmed token comparison uses == not ===."
+
 ### Disputed (provide NEW evidence only — do not re-argue points already settled)
 ### New Findings (full detail: file:line, severity, description, fix)
 
 Rules:
 - Do NOT re-litigate findings already confirmed by the team — just reference them
+- Tool-level verification is required before marking a finding as confirmed. "I agree with Soren" is NOT confirmation. "Read the file, found the issue at the line cited" IS.
 - If another auditor flagged a false positive, either defend with NEW evidence or concede
 - If another auditor raised new issues, verify them — read the code and confirm or challenge
-- Mark each disputed point as CONFIRMED, RETRACTED, or REVISED with a one-line rationale
-- Use your tools to verify claims before accepting or rejecting them`}
+- Mark each disputed point as CONFIRMED, RETRACTED, or REVISED with a one-line rationale citing the evidence
+- Try to disprove each finding before accepting it. Genuine attempts at disproof are more valuable than agreement.`}
 
 Be concise and structured. Cite file:line when relevant. Never repeat yourself or re-argue settled points.
 ${personaBookend(persona)}`;
@@ -556,8 +581,8 @@ ${personaBookend(persona)}`;
 // ============================================================
 
 function buildSorenPlanPrompt(persona, planDescription, contextDir, focus) {
-    const focusSection = focus ? `\nFOCUS AREAS (prioritize these): ${focus}\n` : '';
-    const contextSection = contextDir
+    const focusSection = contextSection(focus);
+    const codebaseContextSection = contextDir
         ? `\nCODEBASE CONTEXT: ${contextDir}\nYou have tool access — read the existing codebase to understand the system you're planning against. Use Read, Glob, Grep, Bash to explore.\n`
         : '';
 
@@ -565,7 +590,7 @@ function buildSorenPlanPrompt(persona, planDescription, contextDir, focus) {
 
 PLAN DESCRIPTION:
 ${planDescription}
-${contextSection}${focusSection}
+${codebaseContextSection}${focusSection}
 YOUR TASK — Code-level planning review. Be concrete and opinionated — your job is to make the plan better, not just assess it.
 
 1. **Top 3 Implementation Approaches**
@@ -590,8 +615,8 @@ ${personaBookend(persona)}`;
 }
 
 function buildAtlasPlanPrompt(persona, planDescription, contextDir, focus) {
-    const focusSection = focus ? `\nFOCUS AREAS (prioritize these): ${focus}\n` : '';
-    const contextSection = contextDir
+    const focusSection = contextSection(focus);
+    const codebaseContextSection = contextDir
         ? `\nCODEBASE CONTEXT: ${contextDir}\nYou have tool access — read the existing codebase to understand the architectural landscape this plan lands in. Use Read, Glob, Grep, Bash to explore.\n`
         : '';
 
@@ -599,7 +624,7 @@ function buildAtlasPlanPrompt(persona, planDescription, contextDir, focus) {
 
 PLAN DESCRIPTION:
 ${planDescription}
-${contextSection}${focusSection}
+${codebaseContextSection}${focusSection}
 YOUR TASK — Architectural planning review. Be concrete and opinionated.
 
 1. **Top 3 Architectural Approaches**
@@ -625,8 +650,8 @@ ${personaBookend(persona)}`;
 }
 
 function buildMorganPlanPrompt(persona, planDescription, contextDir, focus) {
-    const focusSection = focus ? `\nFOCUS AREAS (prioritize these): ${focus}\n` : '';
-    const contextSection = contextDir
+    const focusSection = contextSection(focus);
+    const codebaseContextSection = contextDir
         ? `\nCODEBASE CONTEXT: ${contextDir}\nYou have tool access — read the existing UI and codebase to understand the current user experience before proposing design directions. Use Read, Glob, Grep to explore.\n`
         : '';
 
@@ -634,7 +659,7 @@ function buildMorganPlanPrompt(persona, planDescription, contextDir, focus) {
 
 PLAN DESCRIPTION:
 ${planDescription}
-${contextSection}${focusSection}
+${codebaseContextSection}${focusSection}
 YOUR TASK — UX/product planning review. Be specific and opinionated. You are not just critiquing — you are proposing concrete design directions. Your Domain Intelligence contains your design vocabulary and style library.
 
 1. **Top 3 Design Directions**
@@ -662,7 +687,7 @@ ${personaBookend(persona)}`;
 
 function buildPlanExchangePrompt(persona, name, otherNames, planDescription, contextDir, conversationHistory, roundNum, totalRounds, focus) {
     const othersStr = otherNames.join(' and ');
-    const focusSection = focus ? `\nFOCUS AREAS: ${focus}\n` : '';
+    const focusSection = contextSection(focus);
     const isFinalRound = roundNum === totalRounds;
 
     return `${personaHeader(persona)}You are ${name}, in round ${roundNum} of ${totalRounds} of a collaborative pre-flight plan review with ${othersStr}. You have tool access to verify claims.
@@ -672,6 +697,14 @@ ${planDescription}
 ${focusSection}
 REVIEW CONVERSATION SO FAR:
 ${conversationHistory}
+
+ADVERSARIAL REVIEW POSTURE:
+
+Your default is skepticism, not support. Before endorsing any recommendation from ${othersStr}, try to disprove it. Ask what context would make it wrong. Challenge weak assumptions. Silent agreement for social comfort is the failure mode — it wastes the review and produces over-confident plans.
+
+When you change your mind, say so explicitly and cite the evidence that moved you. "Soren's argument at line 42 about N+1 queries made me reconsider; retracting my earlier position." That is more valuable than silent alignment.
+
+Genuine disagreement surfaces the parts of the plan that need human judgment. Do not smooth it over. If you still disagree after the exchange, say so clearly with the evidence you cited.
 
 YOUR TASK:
 ${isFinalRound
@@ -684,20 +717,21 @@ Challenge any remaining weak points in each other's proposals. Then:
 - List any unresolved open questions that must be answered before starting
 - Flag any risks that weren't adequately addressed
 
-Be concise — this is convergence, not new analysis. Mark each disputed point: CONFIRMED, REVISED, or RETRACTED with one-line rationale.`
+Be concise — this is convergence, not new analysis. Mark each disputed point: CONFIRMED, REVISED, or RETRACTED with one-line rationale + evidence.`
     : `Challenge the other reviewers' recommendations. Your goal: find the strongest approach, not win an argument.
 
-- Call out weak assumptions in each other's top picks
-- Defend your own recommendations with specific evidence (use tools to verify if needed)
-- When someone makes a better argument than you did, say so explicitly and adopt their position
+- Call out weak assumptions in each other's top picks — be specific about which assumption and why it is weak
+- Defend your own recommendations with specific evidence (use tools to verify against the codebase if provided)
+- When someone makes a better argument than you did, say so explicitly and adopt their position with a one-line explanation of what moved you
 - Identify any gaps none of you addressed yet
+- Try to disprove each recommendation before accepting it
 
 Be direct and specific. Cite the plan text or codebase when challenging a claim.`}
 ${personaBookend(persona)}`;
 }
 
 function buildPlanSynthesisPrompt(persona, planDescription, contextDir, conversationHistory, focus) {
-    const focusSection = focus ? `\nFOCUS AREAS: ${focus}\n` : '';
+    const focusSection = contextSection(focus);
     const date = new Date().toISOString().split('T')[0];
 
     return `${personaHeader(persona)}You are Atlas, producing the final pre-flight brief from a collaborative plan review. Soren, you, and Morgan have completed multiple rounds of exchange and converged on recommendations.
@@ -769,9 +803,7 @@ ${personaBookend(persona)}`;
 // ============================================================
 
 function buildSynthesisPrompt(persona, targetDir, conversationHistory, focus) {
-    const focusSection = focus
-        ? `\nFOCUS AREAS: ${focus}\n`
-        : '';
+    const focusSection = contextSection(focus);
 
     return `${personaHeader(persona)}You are Atlas, producing the final synthesis of a collaborative codebase audit. You, Soren, and Morgan have completed multiple rounds of exchange — challenging each other's findings, verifying code, and converging on the best analysis. You have tool access for any final verification.
 
@@ -823,9 +855,7 @@ ${personaBookend(persona)}`;
 }
 
 function buildCondensedSynthesisPrompt(persona, targetDir, conversationHistory, focus) {
-    const focusSection = focus
-        ? `\nFOCUS AREAS: ${focus}\n`
-        : '';
+    const focusSection = contextSection(focus);
 
     // Extract only the last exchange round to reduce context size
     const sections = conversationHistory.split(/(?:^|\n)===\s/);
