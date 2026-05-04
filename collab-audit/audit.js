@@ -1026,50 +1026,75 @@ async function main() {
     // === PLAN MODE ===
     // ============================================================
     if (isPlanMode) {
-        const sorenPersona = loadPersona('soren');
-        if (!sorenPersona) { console.error('Error: Could not load Soren persona'); process.exit(1); }
-        const atlasPersona = loadPersona('atlas');
-        if (!atlasPersona) { console.error('Error: Could not load Atlas persona'); process.exit(1); }
-        const morganPersona = loadPersona('morgan');
-        if (!morganPersona) { console.log('Warning: Could not load Morgan persona — proceeding with Soren + Atlas only'); }
+        const sorenPersona = includeSoren ? loadPersona('soren') : null;
+        if (includeSoren && !sorenPersona) { console.error('Error: Could not load Soren persona'); process.exit(1); }
+        const atlasPersona = includeAtlas ? loadPersona('atlas') : null;
+        if (includeAtlas && !atlasPersona) { console.error('Error: Could not load Atlas persona'); process.exit(1); }
+        const morganPersona = includeMorgan ? loadPersona('morgan') : null;
+        if (includeMorgan && !morganPersona) { console.log('Warning: Could not load Morgan persona — proceeding without Morgan'); }
 
-        const participantCount = morganPersona ? 3 : 2;
-        const totalInvocations = sorenOnly ? 1 : participantCount + (exchanges * participantCount) + 1;
+        const planActive = [includeSoren && sorenPersona && 'Soren', includeAtlas && atlasPersona && 'Atlas', includeMorgan && morganPersona && 'Morgan'].filter(Boolean);
+        if (planActive.length === 0) { console.error('Error: No participants selected'); process.exit(1); }
+
+        const planSingle = onlyParticipants && onlyParticipants.size === 1;
+        const participantCount = planActive.length;
+        const totalInvocations = planSingle ? 1 : participantCount + (exchanges * participantCount) + 1;
+
+        const planRoleMap = { Soren: 'implementation', Atlas: 'architecture', Morgan: 'UX/design' };
+        const reviewersLabel = planActive.map(n => `${n} (${planRoleMap[n]})`).join(' + ');
 
         console.log(`\n=== Collab Plan ===`);
         console.log(`Plan:       ${planDescription.slice(0, 80).replace(/\n/g, ' ')}${planDescription.length > 80 ? '...' : ''}`);
         console.log(`Context:    ${targetDir}`);
         console.log(`Model:      ${model} (initial + synthesis), ${exchangeModel} (exchanges)`);
         console.log(`Focus:      ${focus || '(all areas)'}`);
-        console.log(`Reviewers:  ${morganPersona ? 'Soren (implementation) + Atlas (architecture) + Morgan (UX/design)' : 'Soren + Atlas'}`);
-        console.log(`Exchanges:  ${sorenOnly ? 'none (Soren only)' : exchanges + ` rounds`}`);
+        console.log(`Reviewers:  ${reviewersLabel}`);
+        console.log(`Exchanges:  ${planSingle ? `none (${planActive[0]} only)` : exchanges + ` rounds`}`);
         console.log(`Phases:     ${totalInvocations} claude -p invocations`);
         console.log(`Output:     ${output}`);
         console.log();
 
-        if (sorenOnly) {
-            console.log('Phase 1: Soren — implementation review...');
-            const sorenFindings = await invokeClaude(buildSorenPlanPrompt(sorenPersona, planDescription, targetDir, focus), targetDir, model, verbose)
-                .catch(e => { console.error(`  Soren failed: ${e.message}`); process.exit(1); });
-            console.log(`  Soren complete (${sorenFindings.length} chars)`);
-            fs.writeFileSync(output, `# Pre-Flight Plan Review — Soren's Analysis\n**Date**: ${new Date().toISOString().split('T')[0]}\n\n## Plan\n${planDescription}\n\n## Soren's Review\n${sorenFindings}\n`, 'utf-8');
+        if (planSingle) {
+            const name = planActive[0];
+            const persona = name === 'Soren' ? sorenPersona : name === 'Atlas' ? atlasPersona : morganPersona;
+            const planPromptBuilders = {
+                Soren: () => buildSorenPlanPrompt(sorenPersona, planDescription, targetDir, focus),
+                Atlas: () => buildAtlasPlanPrompt(atlasPersona, planDescription, targetDir, focus),
+                Morgan: () => buildMorganPlanPrompt(morganPersona, planDescription, targetDir, focus),
+            };
+            console.log(`Phase 1: ${name} — plan review...`);
+            const findings = await invokeClaude(planPromptBuilders[name](), targetDir, model, verbose)
+                .catch(e => { console.error(`  ${name} failed: ${e.message}`); process.exit(1); });
+            console.log(`  ${name} complete (${findings.length} chars)`);
+            fs.writeFileSync(output, `# Pre-Flight Plan Review — ${name}'s Analysis\n**Date**: ${new Date().toISOString().split('T')[0]}\n\n## Plan\n${planDescription}\n\n## ${name}'s Review\n${findings}\n`, 'utf-8');
             console.log(`\nReport written to: ${output}`);
             return;
         }
 
-        // Phase 1-3: Parallel initial reviews
+        // Multi-participant: parallel initial reviews
         const startTime = Date.now();
-        console.log('Phase 1-3: Parallel initial reviews — Soren + Atlas + Morgan...');
+        console.log(`Phase 1-${participantCount}: Parallel initial reviews — ${planActive.join(' + ')}...`);
 
-        const reviewPromises = [
-            invokeClaude(buildSorenPlanPrompt(sorenPersona, planDescription, targetDir, focus), targetDir, model, false)
-                .then(r => { console.log(`  Soren complete (${r.length} chars)`); return r; })
-                .catch(e => { console.error(`  Soren failed: ${e.message}`); return null; }),
-            invokeClaude(buildAtlasPlanPrompt(atlasPersona, planDescription, targetDir, focus), targetDir, model, false)
-                .then(r => { console.log(`  Atlas complete (${r.length} chars)`); return r; })
-                .catch(e => { console.error(`  Atlas failed: ${e.message}`); return null; }),
-        ];
+        const reviewPromises = [];
+        const reviewLabels = [];
+        if (sorenPersona) {
+            reviewLabels.push('soren');
+            reviewPromises.push(
+                invokeClaude(buildSorenPlanPrompt(sorenPersona, planDescription, targetDir, focus), targetDir, model, false)
+                    .then(r => { console.log(`  Soren complete (${r.length} chars)`); return r; })
+                    .catch(e => { console.error(`  Soren failed: ${e.message}`); return null; })
+            );
+        }
+        if (atlasPersona) {
+            reviewLabels.push('atlas');
+            reviewPromises.push(
+                invokeClaude(buildAtlasPlanPrompt(atlasPersona, planDescription, targetDir, focus), targetDir, model, false)
+                    .then(r => { console.log(`  Atlas complete (${r.length} chars)`); return r; })
+                    .catch(e => { console.error(`  Atlas failed: ${e.message}`); return null; })
+            );
+        }
         if (morganPersona) {
+            reviewLabels.push('morgan');
             reviewPromises.push(
                 invokeClaude(buildMorganPlanPrompt(morganPersona, planDescription, targetDir, focus), targetDir, model, false)
                     .then(r => { console.log(`  Morgan complete (${r.length} chars)`); return r; })
@@ -1078,26 +1103,29 @@ async function main() {
         }
 
         const planResults = await Promise.all(reviewPromises);
-        const sorenReview = planResults[0];
-        const atlasReview = planResults[1];
-        const morganReview = planResults[2] || '';
-
-        if (!sorenReview || !atlasReview) {
-            console.error('Initial reviews failed — cannot proceed');
-            process.exit(1);
+        let sorenReview = '', atlasReview = '', morganReview = '';
+        for (let i = 0; i < reviewLabels.length; i++) {
+            if (reviewLabels[i] === 'soren') sorenReview = planResults[i] || '';
+            if (reviewLabels[i] === 'atlas') atlasReview = planResults[i] || '';
+            if (reviewLabels[i] === 'morgan') morganReview = planResults[i] || '';
         }
+
+        if (includeSoren && sorenPersona && !sorenReview) { console.error('Soren\'s review failed — cannot proceed'); process.exit(1); }
+        if (includeAtlas && atlasPersona && !atlasReview) { console.error('Atlas\'s review failed — cannot proceed'); process.exit(1); }
         console.log(`  All initial reviews complete in ${((Date.now() - startTime) / 1000).toFixed(0)}s (parallel)`);
 
-        // Build conversation history
-        let conversationHistory = `=== SOREN — Implementation Review ===\n${sorenReview}\n\n=== ATLAS — Architecture Review ===\n${atlasReview}`;
-        if (morganReview) conversationHistory += `\n\n=== MORGAN — UX/Design Review ===\n${morganReview}`;
+        // Build conversation history from whichever participants ran
+        const histParts = [];
+        if (sorenReview) histParts.push(`=== SOREN — Implementation Review ===\n${sorenReview}`);
+        if (atlasReview) histParts.push(`=== ATLAS — Architecture Review ===\n${atlasReview}`);
+        if (morganReview) histParts.push(`=== MORGAN — UX/Design Review ===\n${morganReview}`);
+        let conversationHistory = histParts.join('\n\n');
 
-        // Exchange rounds
-        const planParticipants = [
-            { name: 'Soren', persona: sorenPersona, otherNames: morganPersona ? ['Atlas', 'Morgan'] : ['Atlas'] },
-            { name: 'Atlas', persona: atlasPersona, otherNames: morganPersona ? ['Soren', 'Morgan'] : ['Soren'] },
-        ];
-        if (morganPersona) planParticipants.push({ name: 'Morgan', persona: morganPersona, otherNames: ['Soren', 'Atlas'] });
+        // Exchange rounds — only active participants
+        const planParticipants = [];
+        if (sorenPersona) planParticipants.push({ name: 'Soren', persona: sorenPersona, otherNames: planActive.filter(n => n !== 'Soren') });
+        if (atlasPersona) planParticipants.push({ name: 'Atlas', persona: atlasPersona, otherNames: planActive.filter(n => n !== 'Atlas') });
+        if (morganPersona) planParticipants.push({ name: 'Morgan', persona: morganPersona, otherNames: planActive.filter(n => n !== 'Morgan') });
 
         for (let round = 1; round <= exchanges; round++) {
             const historyTokens = estimateTokens(conversationHistory);
@@ -1118,9 +1146,11 @@ async function main() {
             }
         }
 
-        // Synthesis
-        console.log('Synthesis: Atlas — producing pre-flight brief...');
-        const synthesis = await invokeClaude(buildPlanSynthesisPrompt(atlasPersona, planDescription, targetDir, conversationHistory, focus), targetDir, model, verbose)
+        // Synthesis — use Atlas if available, else first active participant
+        const synthPersona = atlasPersona || sorenPersona || morganPersona;
+        const synthName = atlasPersona ? 'Atlas' : planActive[0];
+        console.log(`Synthesis: ${synthName} — producing pre-flight brief...`);
+        const synthesis = await invokeClaude(buildPlanSynthesisPrompt(synthPersona, planDescription, targetDir, conversationHistory, focus), targetDir, model, verbose)
             .catch(e => { console.error(`  Synthesis failed: ${e.message}`); process.exit(1); });
         console.log(`  Synthesis complete (${synthesis.length} chars)`);
 

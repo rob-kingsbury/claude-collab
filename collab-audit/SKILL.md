@@ -74,12 +74,29 @@ Extract focus areas from user intent — even if not explicitly stated. The `--f
 
 **Tip**: Focused audits produce more actionable findings. For large codebases (100+ files), always recommend `--focus` to avoid spreading analysis too thin.
 
+### Step 2.5: Determine Participant Scope (REQUIRED)
+
+Before running, check whether the user wants a subset of participants. This is a common request — honor it with `--only`.
+
+**Participant routing by user intent:**
+
+| User says | Flag to add |
+|-----------|-------------|
+| "just Soren" / "Soren only" / "quick pass" / "fast check" | `--soren-only` |
+| "just Atlas" / "Atlas only" | `--only "atlas"` |
+| "just Morgan" / "Morgan only" / "UX only" | `--only "morgan"` |
+| "Soren and Atlas" / "skip Morgan" | `--only "soren,atlas"` |
+| "Morgan and Atlas" / "skip Soren" | `--only "morgan,atlas"` |
+| "all three" / "full team" / no scope mentioned | (no flag — default is all three) |
+
+**IMPORTANT**: If the user specifies any subset of participants, you MUST add `--only` (or `--soren-only`). Omitting it runs all three regardless of what the user asked for.
+
 ### Step 3: Run the Audit
 
 Execute the audit script:
 
 ```bash
-node "c:\xampp\htdocs\claude-collab\collab-audit\audit.js" "<target-directory>" [--focus "<areas>"] [--verbose]
+node "c:\xampp\htdocs\claude-collab\collab-audit\audit.js" "<target-directory>" [--focus "<areas>"] [--only "<names>"] [--verbose]
 ```
 
 Options:
