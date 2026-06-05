@@ -24,23 +24,50 @@ const path = require('path');
 
 // --- Configuration ---
 
-const CLAUDE_CLI_JS = (() => {
-  if (process.env.CLAUDE_CLI_JS) return process.env.CLAUDE_CLI_JS;
-  // Try npm global root (correct on Windows where global modules live in AppData)
+// Resolve how to launch Claude Code. Two distribution shapes exist:
+//   - Legacy: a JS entry point (cli.js) run with `node cli.js`.
+//   - Current (2.x native): a compiled binary (claude/claude.exe), run directly.
+// Anthropic switched the npm package from the former to the latter, which broke
+// the old hardcoded `node cli.js` path. This resolver detects whichever exists
+// and reports BOTH the launcher kind and the target, so invokeClaude spawns the
+// right thing. CLAUDE_CLI override (or legacy CLAUDE_CLI_JS) still wins.
+const CLAUDE_LAUNCH = (() => {
+  // Explicit overrides first. CLAUDE_CLI may point to a binary; CLAUDE_CLI_JS to a cli.js.
+  if (process.env.CLAUDE_CLI_JS) return { kind: 'node', target: process.env.CLAUDE_CLI_JS };
+  if (process.env.CLAUDE_CLI) {
+    const t = process.env.CLAUDE_CLI;
+    return { kind: t.endsWith('.js') ? 'node' : 'binary', target: t };
+  }
+  const candidates = [];
   try {
     const { execSync } = require('child_process');
     const globalRoot = execSync('npm root -g', { encoding: 'utf8' }).trim();
-    const globalPath = path.join(globalRoot, '@anthropic-ai', 'claude-code', 'cli.js');
-    if (fs.existsSync(globalPath)) return globalPath;
+    const base = path.join(globalRoot, '@anthropic-ai', 'claude-code');
+    candidates.push({ kind: 'node', target: path.join(base, 'cli.js') });
+    candidates.push({ kind: 'binary', target: path.join(base, 'bin', process.platform === 'win32' ? 'claude.exe' : 'claude') });
   } catch (e) { /* fall through */ }
-  // Fallback: co-located with node binary (Linux/macOS default installs)
-  return path.join(path.dirname(process.execPath), 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js');
+  // Co-located with the node binary (some Linux/macOS installs).
+  const colo = path.join(path.dirname(process.execPath), 'node_modules', '@anthropic-ai', 'claude-code');
+  candidates.push({ kind: 'node', target: path.join(colo, 'cli.js') });
+  candidates.push({ kind: 'binary', target: path.join(colo, 'bin', process.platform === 'win32' ? 'claude.exe' : 'claude') });
+  // A `claude` binary on PATH, last resort.
+  try {
+    const { execSync } = require('child_process');
+    const which = process.platform === 'win32' ? 'where claude' : 'command -v claude';
+    const found = execSync(which, { encoding: 'utf8' }).split(/\r?\n/)[0].trim();
+    if (found) candidates.push({ kind: 'binary', target: found });
+  } catch (e) { /* fall through */ }
+
+  const hit = candidates.find(c => { try { return fs.existsSync(c.target); } catch { return false; } });
+  if (hit) return hit;
+  // Nothing found: keep the legacy default so the error message names a real-ish path.
+  return { kind: 'node', target: path.join(path.dirname(process.execPath), 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js') };
 })();
 const PERSONAS_DIR = process.env.COLLAB_PERSONAS_DIR || 'c:\\claude-collab\\personas';
 const DEFAULT_MODEL = 'opus';
 const DEFAULT_EXCHANGE_MODEL = 'sonnet'; // Exchange rounds use faster model by default
 const MAX_TURNS = 25;
-const TIMEOUT_MS = 600000; // 10 minutes per invocation
+const TIMEOUT_MS = 1200000; // 20 minutes per invocation
 const DEFAULT_EXCHANGES = 2; // Number of collaborative back-and-forth rounds
 const CONTEXT_WINDOW_TOKENS = 200000;
 const PERSONA_BUDGET_RATIO = 0.15; // Slightly lower than chatroom — leave room for codebase
@@ -198,7 +225,7 @@ Examples:
                 case '--context': contextDir = path.resolve(args[++i] || '.'); break;
                 case '--context-note': auditContextNote = args[++i] || ''; break;
                 case '--focus': focus = args[++i] || ''; break;
-                case '--exchanges': exchanges = Math.min(6, Math.max(1, parseInt(args[++i]) || DEFAULT_EXCHANGES)); break;
+                case '--exchanges': { const _n = parseInt(args[++i]); exchanges = Math.min(6, Math.max(0, isNaN(_n) ? DEFAULT_EXCHANGES : _n)); break; }
                 case '--model': model = args[++i] || DEFAULT_MODEL; break;
                 case '--exchange-model': exchangeModel = args[++i] || DEFAULT_EXCHANGE_MODEL; break;
                 case '--output': output = args[++i] || ''; break;
@@ -219,7 +246,7 @@ Examples:
             switch (args[i]) {
                 case '--focus': focus = args[++i] || ''; break;
                 case '--context-note': auditContextNote = args[++i] || ''; break;
-                case '--exchanges': exchanges = Math.min(6, Math.max(1, parseInt(args[++i]) || DEFAULT_EXCHANGES)); break;
+                case '--exchanges': { const _n = parseInt(args[++i]); exchanges = Math.min(6, Math.max(0, isNaN(_n) ? DEFAULT_EXCHANGES : _n)); break; }
                 case '--model': model = args[++i] || DEFAULT_MODEL; break;
                 case '--exchange-model': exchangeModel = args[++i] || DEFAULT_EXCHANGE_MODEL; break;
                 case '--output': output = args[++i] || ''; break;
@@ -948,8 +975,8 @@ ${conversationHistory}
 function invokeClaude(prompt, targetDir, model, verbose) {
     return new Promise((resolve, reject) => {
         let settled = false;
-        const args = [
-            CLAUDE_CLI_JS, '-p',
+        const cliArgs = [
+            '-p',
             '--model', model,
             '--max-turns', String(MAX_TURNS),
             '--tools', 'Bash,Read,Glob,Grep,Task',
@@ -957,12 +984,15 @@ function invokeClaude(prompt, targetDir, model, verbose) {
             '--add-dir', targetDir,
             '--dangerously-skip-permissions'
         ];
+        // Native binary: spawn it directly. Legacy JS: spawn `node cli.js`.
+        const launcher = CLAUDE_LAUNCH.kind === 'binary' ? CLAUDE_LAUNCH.target : process.execPath;
+        const args = CLAUDE_LAUNCH.kind === 'binary' ? cliArgs : [CLAUDE_LAUNCH.target, ...cliArgs];
 
         // Strip CLAUDECODE env var so child claude processes don't think they're nested
         const childEnv = { ...process.env };
         delete childEnv.CLAUDECODE;
 
-        const child = spawn(process.execPath, args, {
+        const child = spawn(launcher, args, {
             cwd: targetDir,
             env: childEnv,
             stdio: ['pipe', 'pipe', 'pipe']
@@ -1114,6 +1144,20 @@ async function main() {
         if (includeAtlas && atlasPersona && !atlasReview) { console.error('Atlas\'s review failed — cannot proceed'); process.exit(1); }
         console.log(`  All initial reviews complete in ${((Date.now() - startTime) / 1000).toFixed(0)}s (parallel)`);
 
+        // Persist initial reviews to sidecar so synthesis timeouts don't lose data
+        const sidecarPath = output.replace(/\.md$/, '.reviews.md');
+        const writeSidecar = (label, content) => {
+            try {
+                const header = `\n\n=== ${label} ===\n`;
+                fs.appendFileSync(sidecarPath, header + content + '\n', 'utf-8');
+            } catch (e) { console.error(`  Sidecar write failed: ${e.message}`); }
+        };
+        try { fs.writeFileSync(sidecarPath, `# Raw Reviews — ${planDescription.slice(0, 80).replace(/\n/g, ' ')}\nDate: ${new Date().toISOString()}\n`, 'utf-8'); } catch (e) {}
+        if (sorenReview) writeSidecar('SOREN — Initial Review', sorenReview);
+        if (atlasReview) writeSidecar('ATLAS — Initial Review', atlasReview);
+        if (morganReview) writeSidecar('MORGAN — Initial Review', morganReview);
+        console.log(`  Reviews persisted to: ${sidecarPath}`);
+
         // Build conversation history from whichever participants ran
         const histParts = [];
         if (sorenReview) histParts.push(`=== SOREN — Implementation Review ===\n${sorenReview}`);
@@ -1142,7 +1186,10 @@ async function main() {
 
             const roundResults = await Promise.all(roundPromises);
             for (const { name, response } of roundResults) {
-                if (response) conversationHistory += `\n\n=== ${name.toUpperCase()} — Exchange Round ${round} ===\n${response}`;
+                if (response) {
+                    conversationHistory += `\n\n=== ${name.toUpperCase()} — Exchange Round ${round} ===\n${response}`;
+                    writeSidecar(`${name.toUpperCase()} — Exchange Round ${round}`, response);
+                }
             }
         }
 
