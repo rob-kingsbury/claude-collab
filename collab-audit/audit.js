@@ -216,6 +216,7 @@ Options:
   --sequential           Disable parallel execution (run all phases sequentially)
   --only "names"         Comma-separated participant names (e.g., "morgan,atlas")
   --soren-only           Shorthand for --only soren
+  --dry-run              Resolve participants + print the plan (invocations, synthesizer), then exit. No claude calls.
   --verbose              Show real-time progress
   --help, -h             Show this help
 
@@ -240,6 +241,7 @@ Examples:
     let onlyParticipants = null; // null = all, Set of lowercase names = subset
     let verbose = false;
     let sequential = false;
+    let dryRun = false;
 
     // First pass: detect plan mode flags before positional arg parsing
     const planFlagIdx = args.indexOf('--plan');
@@ -268,6 +270,7 @@ Examples:
                 case '--only': onlyParticipants = new Set((args[++i] || '').toLowerCase().split(',').map(s => s.trim()).filter(Boolean)); break;
                 case '--sequential': sequential = true; break;
                 case '--verbose': verbose = true; break;
+                case '--dry-run': dryRun = true; break;
             }
         }
         if (!planDescription) { console.error('Error: --plan requires a description string'); process.exit(1); }
@@ -289,6 +292,7 @@ Examples:
                 case '--only': onlyParticipants = new Set((args[++i] || '').toLowerCase().split(',').map(s => s.trim()).filter(Boolean)); break;
                 case '--sequential': sequential = true; break;
                 case '--verbose': verbose = true; break;
+                case '--dry-run': dryRun = true; break;
             }
         }
         if (!output) output = path.join(targetDir, 'audit-report.md');
@@ -305,7 +309,7 @@ Examples:
         }
     }
 
-    return { targetDir, focus, contextNote, model, exchangeModel, output, exchanges, onlyParticipants, verbose, sequential, planDescription, isPlanMode };
+    return { targetDir, focus, contextNote, model, exchangeModel, output, exchanges, onlyParticipants, verbose, sequential, dryRun, planDescription, isPlanMode };
 }
 
 // --- Persona loader (extracted from watcher/persona.js) ---
@@ -1099,7 +1103,7 @@ function invokeClaude(prompt, targetDir, model, verbose) {
 // --- Main ---
 
 async function main() {
-    const { targetDir, focus, contextNote, model, exchangeModel, output, exchanges, onlyParticipants, verbose, sequential, planDescription, isPlanMode } = parseArgs();
+    const { targetDir, focus, contextNote, model, exchangeModel, output, exchanges, onlyParticipants, verbose, sequential, dryRun, planDescription, isPlanMode } = parseArgs();
     const includeSoren = !onlyParticipants || onlyParticipants.has('soren');
     const includeAtlas = !onlyParticipants || onlyParticipants.has('atlas');
     const includeMorgan = !onlyParticipants || onlyParticipants.has('morgan');
@@ -1144,6 +1148,16 @@ async function main() {
         console.log(`Phases:     ${totalInvocations} claude -p invocations`);
         console.log(`Output:     ${output}`);
         console.log();
+
+        if (dryRun) {
+            const synthName = planSingle ? 'n/a (single participant, no synthesis)' : (atlasPersona ? 'Atlas' : planActive[0]);
+            console.log('[DRY RUN] No claude -p calls will be made.');
+            console.log(`  Mode:         plan review`);
+            console.log(`  Participants: ${planActive.join(', ')}${planSingle ? ' (single)' : ` (${participantCount}-way)`}`);
+            console.log(`  Synthesizer:  ${synthName}`);
+            console.log(`  Invocations:  ${totalInvocations} (${planSingle ? '1 review' : `${participantCount} initial + ${exchanges}x${participantCount} exchange + 1 synthesis`})`);
+            return;
+        }
 
         if (planSingle) {
             const name = planActive[0];
@@ -1309,6 +1323,16 @@ async function main() {
     console.log(`Phases:     ${totalInvocations} claude -p invocations`);
     console.log(`Output:     ${output}`);
     console.log();
+
+    if (dryRun) {
+        const synthName = singleParticipant ? 'n/a (single participant, no synthesis)' : (atlasPersona ? 'Atlas' : sorenPersona ? 'Soren' : 'Morgan');
+        console.log('[DRY RUN] No claude -p calls will be made.');
+        console.log(`  Mode:         audit (${parallelMode ? 'parallel' : 'sequential'})`);
+        console.log(`  Participants: ${activeParticipants.join(', ')}${singleParticipant ? ' (single)' : ` (${participantCount}-way)`}`);
+        console.log(`  Synthesizer:  ${synthName}`);
+        console.log(`  Invocations:  ${totalInvocations} (${singleParticipant ? '1 scan' : `${participantCount} initial + ${exchanges}x${participantCount} exchange + 1 synthesis`})`);
+        return;
+    }
 
     // === Single-participant mode ===
     if (singleParticipant) {
