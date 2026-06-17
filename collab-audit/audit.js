@@ -324,9 +324,25 @@ function estimateTokens(text) {
     return Math.ceil(text.length / 4);
 }
 
+// Personas this tool knows how to load. `name` always comes from this fixed
+// internal set (never user input), but we validate at the boundary anyway so the
+// file path can never be steered outside PERSONAS_DIR.
+const KNOWN_PERSONAS = new Set(['soren', 'atlas', 'morgan', 'ellison']);
+
+// Resolve a `<dir>/<base>` path and confirm it stays inside `dir`. Returns the
+// resolved absolute path, or null if it would escape (path traversal guard).
+function resolveWithinDir(dir, base) {
+    const dirAbs = path.resolve(dir);
+    const fileAbs = path.resolve(dirAbs, base);
+    return (fileAbs === dirAbs || fileAbs.startsWith(dirAbs + path.sep)) ? fileAbs : null;
+}
+
 function loadPersona(name) {
-    const personaFile = path.join(PERSONAS_DIR, `${name}.md`);
-    const journalFile = path.join(PERSONAS_DIR, `${name}-journal.md`);
+    // Boundary validation: only known persona names, no path separators.
+    if (!KNOWN_PERSONAS.has(name)) return null;
+    const personaFile = resolveWithinDir(PERSONAS_DIR, `${name}.md`);
+    const journalFile = resolveWithinDir(PERSONAS_DIR, `${name}-journal.md`);
+    if (!personaFile || !journalFile) return null;
 
     let personaText = '';
     let journalText = '';
