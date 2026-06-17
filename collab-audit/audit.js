@@ -50,18 +50,32 @@ const CLAUDE_LAUNCH = (() => {
   const colo = path.join(path.dirname(process.execPath), 'node_modules', '@anthropic-ai', 'claude-code');
   candidates.push({ kind: 'node', target: path.join(colo, 'cli.js') });
   candidates.push({ kind: 'binary', target: path.join(colo, 'bin', process.platform === 'win32' ? 'claude.exe' : 'claude') });
-  // A `claude` binary on PATH, last resort.
+  // A `claude` on PATH, last resort. On Windows `where claude` returns the npm
+  // shims (claude, claude.cmd) — NOT the real exe, and spawning a .cmd directly
+  // without a shell is unreliable. So for each hit: use it directly only if it's a
+  // real binary (.exe or extension-less on POSIX), and ALSO derive the real binary
+  // that sits under the shim's npm prefix (<prefix>/node_modules/@anthropic-ai/
+  // claude-code/bin/claude[.exe]) and prefer that.
   try {
     const { execSync } = require('child_process');
     const which = process.platform === 'win32' ? 'where claude' : 'command -v claude';
-    const found = execSync(which, { encoding: 'utf8' }).split(/\r?\n/)[0].trim();
-    if (found) candidates.push({ kind: 'binary', target: found });
+    const found = execSync(which, { encoding: 'utf8' }).split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    const binName = process.platform === 'win32' ? 'claude.exe' : 'claude';
+    for (const f of found) {
+      const realBin = path.join(path.dirname(f), 'node_modules', '@anthropic-ai', 'claude-code', 'bin', binName);
+      candidates.push({ kind: 'binary', target: realBin });
+      const isRealBinary = process.platform === 'win32' ? /\.exe$/i.test(f) : !/\.(cmd|bat|ps1)$/i.test(f);
+      if (isRealBinary) candidates.push({ kind: 'binary', target: f });
+    }
   } catch (e) { /* fall through */ }
 
   const hit = candidates.find(c => { try { return fs.existsSync(c.target); } catch { return false; } });
   if (hit) return hit;
-  // Nothing found: keep the legacy default so the error message names a real-ish path.
-  return { kind: 'node', target: path.join(path.dirname(process.execPath), 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js') };
+  // Nothing found. Do NOT return a stale cli.js path — that produces a misleading
+  // "Cannot find module" at spawn time. Return a 'missing' sentinel carrying the
+  // candidate list; invokeClaude() turns it into a loud, actionable error when an
+  // invocation is actually attempted (so --help still works on a broken install).
+  return { kind: 'missing', target: null, tried: candidates };
 })();
 const PERSONAS_DIR = process.env.COLLAB_PERSONAS_DIR || 'c:\\claude-collab\\personas';
 const DEFAULT_MODEL = 'opus';
@@ -74,17 +88,19 @@ const PERSONA_BUDGET_RATIO = 0.15; // Slightly lower than chatroom — leave roo
 const PERSONA_BUDGET_TOKENS = Math.floor(CONTEXT_WINDOW_TOKENS * PERSONA_BUDGET_RATIO);
 
 // --- Business context (from --context-note flag) ---
-// Set once by parseArgs, read by every prompt builder via contextSection().
 // Business context calibrates severity judgments — a SQL injection in an
 // internal 3-user tool is not the same severity as one on a 50k-user SaaS.
-let auditContextNote = '';
+// Threaded explicitly as a parameter (contextNote) from parseArgs() through
+// every prompt builder, the same way focus is. No hidden module-level state.
 
 // Unified helper for the FOCUS AREAS + BUSINESS CONTEXT prompt section.
 // Every prompt builder calls this instead of constructing focusSection inline.
-function contextSection(focus) {
+// The explicit name makes the dependencies obvious and prevents a future
+// contributor from accidentally shadowing it with a local variable.
+function buildFocusAndContextBlock(focus, contextNote) {
     const parts = [];
     if (focus) parts.push(`FOCUS AREAS (prioritize these): ${focus}`);
-    if (auditContextNote) parts.push(`BUSINESS CONTEXT: ${auditContextNote}`);
+    if (contextNote) parts.push(`BUSINESS CONTEXT: ${contextNote}`);
     return parts.length ? '\n' + parts.join('\n') + '\n' : '';
 }
 
@@ -92,7 +108,12 @@ function contextSection(focus) {
 // Borrowed from Crob's source-aware confidence model: every audit finding carries
 // a confidence tier and provenance trail so readers can weight findings by how
 // well-corroborated they are across auditors. See crob/docs/FORMAT.md for the
-// underlying epistemic model.
+// underlying epistemic model. Tier-to-Crob-signal lineage (kept here, NOT in the
+// prompt — the synthesis model has no Crob context, so inline references are wasted
+// tokens):
+//   - `corroborated` ≈ Crob's +0.15 cross-source corroboration boost.
+//   - `disputed`     ≈ Crob's `distinct_objects > 1` signal (surface disagreement,
+//                       don't average it away).
 const ANNOTATED_FINDING_FORMAT = `
 ### Annotated Finding Format (REQUIRED for every finding)
 
@@ -112,14 +133,14 @@ Every finding in Critical/High/Medium/Low/UX sections MUST use this structure:
 **Confidence tier rules**:
 - \`provisional\`: one auditor flagged it with hedging language ("might", "possibly", "likely") OR without direct file verification. Treat as a hypothesis.
 - \`observed\`: one auditor verified via file read/grep, no cross-auditor comment. Single-source fact.
-- \`corroborated\`: 2+ auditors independently verified from different angles, OR one raised + another confirmed in an exchange round. This is the equivalent of Crob's +0.15 cross-source corroboration.
-- \`disputed\`: at least one auditor pushed back on the finding. Show both sides in the Agreement line and state the final resolution. This is the equivalent of Crob's distinct_objects > 1 signal — surface it, don't average it away.
+- \`corroborated\`: 2+ auditors independently verified from different angles, OR one raised + another confirmed in an exchange round. This is the strongest signal in the report.
+- \`disputed\`: at least one auditor pushed back on the finding. Show both sides in the Agreement line and state the final resolution. Surface the disagreement — do not average it away.
 
 **Do not silently drop disputed findings.** If the team couldn't agree, say so and show the evidence each side cited. Human readers need to see disagreement to make their own call.
 
 ### Examples (follow this exact format)
 
-**Example 1 — corroborated finding (Crob +0.15 equivalent)**
+**Example 1 — corroborated finding (2+ auditors verified independently)**
 
 **[H1] SQL injection in user search endpoint**
 - **Severity**: high — exposes customer email addresses on a public endpoint reachable without authentication (per business context, customer PII is the primary asset to protect)
@@ -130,7 +151,7 @@ Every finding in Critical/High/Medium/Low/UX sections MUST use this structure:
 - **Description**: \`api/search.php:42\` concatenates \`$_GET['q']\` directly into a SQL string with no parameterization or escaping. An attacker can read or drop tables via crafted query parameters.
 - **Fix**: Replace the raw concat with a prepared statement. \`$stmt = $pdo->prepare('SELECT * FROM users WHERE name LIKE ?'); $stmt->execute(['%' . $_GET['q'] . '%']);\`
 
-**Example 2 — disputed finding (Crob distinct_objects > 1 equivalent)**
+**Example 2 — disputed finding (auditors did not converge)**
 
 **[M3] Caching layer complexity may not be justified**
 - **Severity**: medium — burdens developer experience and onboarding without breaking the system; a refactor would save time long-term but isn't urgent at current traffic
@@ -152,7 +173,20 @@ Every finding in Critical/High/Medium/Low/UX sections MUST use this structure:
 - **Description**: The search icon in the header is a \`<button>\` with only an SVG child. Screen readers announce it as "button, button" with no context.
 - **Fix**: Add \`aria-label="Search"\` to the button element at \`templates/header.php:24\`.
 
+**Example 4 — provisional finding (flagged but not yet verified)**
+
+**[M5] Possible unsafe type coercion in cart total**
+- **Severity**: medium — may undercharge or overcharge if a string slips into the price math, but unconfirmed
+- **Evidence**: \`lib/cart.js:88\` (pattern spotted in passing, not opened with Read)
+- **Confidence**: provisional
+- **Raised by**: Soren (initial scan)
+- **Agreement**: Needs tool verification to promote to \`observed\`. No other auditor has checked it. Soren flagged it from a grep hit, did not Read the surrounding function or trace the input types.
+- **Description**: \`lib/cart.js:88\` appears to use \`+\` on values that may be strings (\`price + qty\`), which would concatenate rather than add. Suspected, not confirmed — the input types upstream were not traced.
+- **Fix**: Read \`lib/cart.js\` around line 88, confirm the types of both operands, and if coercion is real, parse to Number before the arithmetic. Promote to \`observed\` once verified.
+
 **Notice**: in Example 2, the team couldn't converge on one answer so the finding was marked \`disputed\` and both sides were documented. The \`Fix\` field still gives clear guidance (document the justification). Disputed does not mean "can't act" — it means "act with eyes open."
+
+**Use \`provisional\` honestly.** If you flagged something without opening the file, or with hedging language, mark it \`provisional\` (Example 4) rather than inflating it to \`observed\`. An honest \`provisional\` is more useful than a falsely confident \`observed\`. It tells the reader exactly what still needs tool verification.
 `;
 
 
@@ -198,6 +232,7 @@ Examples:
     let contextDir = '';
     let targetDir = '';
     let focus = '';
+    let contextNote = '';
     let model = DEFAULT_MODEL;
     let exchangeModel = DEFAULT_EXCHANGE_MODEL;
     let output = '';
@@ -223,7 +258,7 @@ Examples:
                     break;
                 }
                 case '--context': contextDir = path.resolve(args[++i] || '.'); break;
-                case '--context-note': auditContextNote = args[++i] || ''; break;
+                case '--context-note': contextNote = args[++i] || ''; break;
                 case '--focus': focus = args[++i] || ''; break;
                 case '--exchanges': { const _n = parseInt(args[++i]); exchanges = Math.min(6, Math.max(0, isNaN(_n) ? DEFAULT_EXCHANGES : _n)); break; }
                 case '--model': model = args[++i] || DEFAULT_MODEL; break;
@@ -245,7 +280,7 @@ Examples:
         for (let i = 1; i < args.length; i++) {
             switch (args[i]) {
                 case '--focus': focus = args[++i] || ''; break;
-                case '--context-note': auditContextNote = args[++i] || ''; break;
+                case '--context-note': contextNote = args[++i] || ''; break;
                 case '--exchanges': { const _n = parseInt(args[++i]); exchanges = Math.min(6, Math.max(0, isNaN(_n) ? DEFAULT_EXCHANGES : _n)); break; }
                 case '--model': model = args[++i] || DEFAULT_MODEL; break;
                 case '--exchange-model': exchangeModel = args[++i] || DEFAULT_EXCHANGE_MODEL; break;
@@ -270,7 +305,7 @@ Examples:
         }
     }
 
-    return { targetDir, focus, model, exchangeModel, output, exchanges, onlyParticipants, verbose, sequential, planDescription, isPlanMode };
+    return { targetDir, focus, contextNote, model, exchangeModel, output, exchanges, onlyParticipants, verbose, sequential, planDescription, isPlanMode };
 }
 
 // --- Persona loader (extracted from watcher/persona.js) ---
@@ -355,8 +390,8 @@ function personaBookend(persona) {
     return `\n=== REMINDER (trait anchor) ===\n${persona.bookend}`;
 }
 
-function buildSorenInitialPrompt(persona, targetDir, focus) {
-    const focusSection = contextSection(focus);
+function buildSorenInitialPrompt(persona, targetDir, focus, contextNote) {
+    const focusSection = buildFocusAndContextBlock(focus, contextNote);
 
     return `${personaHeader(persona)}You are Soren, performing Phase 1 of a collaborative codebase audit with Atlas. You have full tool access — use Read, Glob, Grep, and Bash to explore the codebase thoroughly.
 
@@ -387,8 +422,8 @@ End with a brief summary: total findings by severity, overall assessment.
 ${personaBookend(persona)}`;
 }
 
-function buildAtlasReviewPrompt(persona, targetDir, sorenFindings, focus) {
-    const focusSection = contextSection(focus);
+function buildAtlasReviewPrompt(persona, targetDir, sorenFindings, focus, contextNote) {
+    const focusSection = buildFocusAndContextBlock(focus, contextNote);
 
     return `${personaHeader(persona)}You are Atlas, performing Phase 2 of a collaborative codebase audit with Soren. He has completed his initial code-level analysis (below). You have full tool access — use it to verify his findings and examine structural patterns he may have missed.
 
@@ -413,8 +448,8 @@ Be direct and substantive. Don't just agree — your value is in challenging and
 ${personaBookend(persona)}`;
 }
 
-function buildMorganReviewPrompt(persona, targetDir, sorenFindings, atlasReview, focus) {
-    const focusSection = contextSection(focus);
+function buildMorganReviewPrompt(persona, targetDir, sorenFindings, atlasReview, focus, contextNote) {
+    const focusSection = buildFocusAndContextBlock(focus, contextNote);
 
     return `${personaHeader(persona)}You are Morgan, performing Phase 3 of a collaborative codebase audit with Soren and Atlas. They've completed their initial code-level and structural analyses (below). You have full tool access — use it to examine the codebase from your perspective.
 
@@ -461,8 +496,8 @@ ${personaBookend(persona)}`;
 
 // Independent prompts for parallel initial scans (no prior findings to reference)
 
-function buildAtlasIndependentPrompt(persona, targetDir, focus) {
-    const focusSection = contextSection(focus);
+function buildAtlasIndependentPrompt(persona, targetDir, focus, contextNote) {
+    const focusSection = buildFocusAndContextBlock(focus, contextNote);
 
     return `${personaHeader(persona)}You are Atlas, performing an independent initial analysis as part of a collaborative codebase audit with Soren and Morgan. You have full tool access — use Read, Glob, Grep, and Bash to explore the codebase thoroughly.
 
@@ -494,8 +529,8 @@ End with a brief summary: total findings by severity, overall structural assessm
 ${personaBookend(persona)}`;
 }
 
-function buildMorganIndependentPrompt(persona, targetDir, focus) {
-    const focusSection = contextSection(focus);
+function buildMorganIndependentPrompt(persona, targetDir, focus, contextNote) {
+    const focusSection = buildFocusAndContextBlock(focus, contextNote);
 
     return `${personaHeader(persona)}You are Morgan, performing an independent initial analysis as part of a collaborative codebase audit with Soren and Atlas. You have full tool access — use Read, Glob, Grep, and Bash to explore the codebase thoroughly.
 
@@ -538,8 +573,8 @@ End with a brief summary: total findings by severity, overall UX/product assessm
 ${personaBookend(persona)}`;
 }
 
-function buildExchangePrompt(persona, name, otherNames, targetDir, conversationHistory, roundNum, totalRounds, focus) {
-    const focusSection = contextSection(focus);
+function buildExchangePrompt(persona, name, otherNames, targetDir, conversationHistory, roundNum, totalRounds, focus, contextNote) {
+    const focusSection = buildFocusAndContextBlock(focus, contextNote);
     const isFinalRound = roundNum === totalRounds;
     const othersStr = otherNames.join(' and ');
 
@@ -570,7 +605,7 @@ ${isFinalRound ? `This is the FINAL exchange round. Produce a consolidated findi
 Structure your response as:
 
 ### Confirmed Findings (all agree, verified by tool action)
-[Number each finding. file:line, severity, one-line description, and a short **Verified by** note: which tool action you ran. Do NOT re-explain the finding — just list and verify.]
+[Number each finding. file:line, severity, one-line description, a short **Verified by** note (which tool action you ran), and a **Raised by** note: who originally flagged it (Soren / Atlas / Morgan) and in which phase (initial / round N). Do NOT re-explain the finding — just list, attribute, and verify. The Raised-by provenance feeds synthesis directly so it does not have to reconstruct attribution from the full transcript.]
 
 ### Revised Findings (severity or description changed)
 [What changed and why, with evidence from tool action.]
@@ -607,8 +642,8 @@ ${personaBookend(persona)}`;
 // --- Plan mode prompt builders ---
 // ============================================================
 
-function buildSorenPlanPrompt(persona, planDescription, contextDir, focus) {
-    const focusSection = contextSection(focus);
+function buildSorenPlanPrompt(persona, planDescription, contextDir, focus, contextNote) {
+    const focusSection = buildFocusAndContextBlock(focus, contextNote);
     const codebaseContextSection = contextDir
         ? `\nCODEBASE CONTEXT: ${contextDir}\nYou have tool access — read the existing codebase to understand the system you're planning against. Use Read, Glob, Grep, Bash to explore.\n`
         : '';
@@ -641,8 +676,8 @@ End with your single recommended implementation approach (2-3 sentences).
 ${personaBookend(persona)}`;
 }
 
-function buildAtlasPlanPrompt(persona, planDescription, contextDir, focus) {
-    const focusSection = contextSection(focus);
+function buildAtlasPlanPrompt(persona, planDescription, contextDir, focus, contextNote) {
+    const focusSection = buildFocusAndContextBlock(focus, contextNote);
     const codebaseContextSection = contextDir
         ? `\nCODEBASE CONTEXT: ${contextDir}\nYou have tool access — read the existing codebase to understand the architectural landscape this plan lands in. Use Read, Glob, Grep, Bash to explore.\n`
         : '';
@@ -676,8 +711,8 @@ End with your single recommended architectural approach (2-3 sentences).
 ${personaBookend(persona)}`;
 }
 
-function buildMorganPlanPrompt(persona, planDescription, contextDir, focus) {
-    const focusSection = contextSection(focus);
+function buildMorganPlanPrompt(persona, planDescription, contextDir, focus, contextNote) {
+    const focusSection = buildFocusAndContextBlock(focus, contextNote);
     const codebaseContextSection = contextDir
         ? `\nCODEBASE CONTEXT: ${contextDir}\nYou have tool access — read the existing UI and codebase to understand the current user experience before proposing design directions. Use Read, Glob, Grep to explore.\n`
         : '';
@@ -712,9 +747,9 @@ End with your single recommended design direction (2-3 sentences) and the one UX
 ${personaBookend(persona)}`;
 }
 
-function buildPlanExchangePrompt(persona, name, otherNames, planDescription, contextDir, conversationHistory, roundNum, totalRounds, focus) {
+function buildPlanExchangePrompt(persona, name, otherNames, planDescription, contextDir, conversationHistory, roundNum, totalRounds, focus, contextNote) {
     const othersStr = otherNames.join(' and ');
-    const focusSection = contextSection(focus);
+    const focusSection = buildFocusAndContextBlock(focus, contextNote);
     const isFinalRound = roundNum === totalRounds;
 
     return `${personaHeader(persona)}You are ${name}, in round ${roundNum} of ${totalRounds} of a collaborative pre-flight plan review with ${othersStr}. You have tool access to verify claims.
@@ -757,8 +792,8 @@ Be direct and specific. Cite the plan text or codebase when challenging a claim.
 ${personaBookend(persona)}`;
 }
 
-function buildPlanSynthesisPrompt(persona, planDescription, contextDir, conversationHistory, focus) {
-    const focusSection = contextSection(focus);
+function buildPlanSynthesisPrompt(persona, planDescription, contextDir, conversationHistory, focus, contextNote) {
+    const focusSection = buildFocusAndContextBlock(focus, contextNote);
     const date = new Date().toISOString().split('T')[0];
 
     return `${personaHeader(persona)}You are Atlas, producing the final pre-flight brief from a collaborative plan review. Soren, you, and Morgan have completed multiple rounds of exchange and converged on recommendations.
@@ -829,8 +864,8 @@ ${personaBookend(persona)}`;
 
 // ============================================================
 
-function buildSynthesisPrompt(persona, targetDir, conversationHistory, focus) {
-    const focusSection = contextSection(focus);
+function buildSynthesisPrompt(persona, targetDir, conversationHistory, focus, contextNote) {
+    const focusSection = buildFocusAndContextBlock(focus, contextNote);
 
     return `${personaHeader(persona)}You are Atlas, producing the final synthesis of a collaborative codebase audit. You, Soren, and Morgan have completed multiple rounds of exchange — challenging each other's findings, verifying code, and converging on the best analysis. You have tool access for any final verification.
 
@@ -881,8 +916,8 @@ Write the report in this exact structure:
 ${personaBookend(persona)}`;
 }
 
-function buildCondensedSynthesisPrompt(persona, targetDir, conversationHistory, focus) {
-    const focusSection = contextSection(focus);
+function buildCondensedSynthesisPrompt(persona, targetDir, conversationHistory, focus, contextNote) {
+    const focusSection = buildFocusAndContextBlock(focus, contextNote);
 
     // Extract only the last exchange round to reduce context size
     const sections = conversationHistory.split(/(?:^|\n)===\s/);
@@ -936,7 +971,7 @@ Use this exact structure:
 ${personaBookend(persona)}`;
 }
 
-function buildFallbackReport(targetDir, conversationHistory, focus) {
+function buildFallbackReport(targetDir, conversationHistory, focus, contextNote) {
     const date = new Date().toISOString().split('T')[0];
 
     // Extract findings from conversation by scanning for severity markers
@@ -955,7 +990,7 @@ function buildFallbackReport(targetDir, conversationHistory, focus) {
 **Date**: ${date}
 **Auditors**: Soren (code analysis) + Atlas (structural review & synthesis) + Morgan (UX/product)
 **Method**: Multi-round collaborative exchange (synthesis phase failed — this is an auto-generated summary)
-${focus ? `**Focus**: ${focus}\n` : ''}
+${focus ? `**Focus**: ${focus}\n` : ''}${contextNote ? `**Business Context**: ${contextNote}\n` : ''}
 ## Note
 The AI synthesis phase failed twice. This report contains the raw exchange log below. Approximate finding counts from the exchange: ~${counts.CRITICAL} critical, ~${counts.HIGH} high, ~${counts.MEDIUM} medium, ~${counts.LOW} low (~${estUnique} estimated unique findings).
 
@@ -975,6 +1010,16 @@ ${conversationHistory}
 function invokeClaude(prompt, targetDir, model, verbose) {
     return new Promise((resolve, reject) => {
         let settled = false;
+        if (CLAUDE_LAUNCH.kind === 'missing') {
+            const tried = (CLAUDE_LAUNCH.tried || []).map(c => `  - [${c.kind}] ${c.target}`).join('\n') || '  (no candidates found — is Node/npm on PATH?)';
+            return reject(new Error(
+                'Could not locate the Claude Code launcher (native binary or legacy cli.js).\n' +
+                'Tried these paths, none exist:\n' + tried + '\n' +
+                'Fix: reinstall/repair Claude Code, or set CLAUDE_CLI to the full path of your claude binary\n' +
+                '     (e.g. C:\\Users\\you\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe),\n' +
+                '     or CLAUDE_CLI_JS to a legacy cli.js path.'
+            ));
+        }
         const cliArgs = [
             '-p',
             '--model', model,
@@ -1038,7 +1083,7 @@ function invokeClaude(prompt, targetDir, model, verbose) {
 // --- Main ---
 
 async function main() {
-    const { targetDir, focus, model, exchangeModel, output, exchanges, onlyParticipants, verbose, sequential, planDescription, isPlanMode } = parseArgs();
+    const { targetDir, focus, contextNote, model, exchangeModel, output, exchanges, onlyParticipants, verbose, sequential, planDescription, isPlanMode } = parseArgs();
     const includeSoren = !onlyParticipants || onlyParticipants.has('soren');
     const includeAtlas = !onlyParticipants || onlyParticipants.has('atlas');
     const includeMorgan = !onlyParticipants || onlyParticipants.has('morgan');
@@ -1088,9 +1133,9 @@ async function main() {
             const name = planActive[0];
             const persona = name === 'Soren' ? sorenPersona : name === 'Atlas' ? atlasPersona : morganPersona;
             const planPromptBuilders = {
-                Soren: () => buildSorenPlanPrompt(sorenPersona, planDescription, targetDir, focus),
-                Atlas: () => buildAtlasPlanPrompt(atlasPersona, planDescription, targetDir, focus),
-                Morgan: () => buildMorganPlanPrompt(morganPersona, planDescription, targetDir, focus),
+                Soren: () => buildSorenPlanPrompt(sorenPersona, planDescription, targetDir, focus, contextNote),
+                Atlas: () => buildAtlasPlanPrompt(atlasPersona, planDescription, targetDir, focus, contextNote),
+                Morgan: () => buildMorganPlanPrompt(morganPersona, planDescription, targetDir, focus, contextNote),
             };
             console.log(`Phase 1: ${name} — plan review...`);
             const findings = await invokeClaude(planPromptBuilders[name](), targetDir, model, verbose)
@@ -1110,7 +1155,7 @@ async function main() {
         if (sorenPersona) {
             reviewLabels.push('soren');
             reviewPromises.push(
-                invokeClaude(buildSorenPlanPrompt(sorenPersona, planDescription, targetDir, focus), targetDir, model, false)
+                invokeClaude(buildSorenPlanPrompt(sorenPersona, planDescription, targetDir, focus, contextNote), targetDir, model, false)
                     .then(r => { console.log(`  Soren complete (${r.length} chars)`); return r; })
                     .catch(e => { console.error(`  Soren failed: ${e.message}`); return null; })
             );
@@ -1118,7 +1163,7 @@ async function main() {
         if (atlasPersona) {
             reviewLabels.push('atlas');
             reviewPromises.push(
-                invokeClaude(buildAtlasPlanPrompt(atlasPersona, planDescription, targetDir, focus), targetDir, model, false)
+                invokeClaude(buildAtlasPlanPrompt(atlasPersona, planDescription, targetDir, focus, contextNote), targetDir, model, false)
                     .then(r => { console.log(`  Atlas complete (${r.length} chars)`); return r; })
                     .catch(e => { console.error(`  Atlas failed: ${e.message}`); return null; })
             );
@@ -1126,7 +1171,7 @@ async function main() {
         if (morganPersona) {
             reviewLabels.push('morgan');
             reviewPromises.push(
-                invokeClaude(buildMorganPlanPrompt(morganPersona, planDescription, targetDir, focus), targetDir, model, false)
+                invokeClaude(buildMorganPlanPrompt(morganPersona, planDescription, targetDir, focus, contextNote), targetDir, model, false)
                     .then(r => { console.log(`  Morgan complete (${r.length} chars)`); return r; })
                     .catch(e => { console.error(`  Morgan failed: ${e.message}`); return ''; })
             );
@@ -1179,7 +1224,7 @@ async function main() {
             console.log(`Exchange round ${round}/${exchanges}...`);
 
             const roundPromises = planParticipants.map(p =>
-                invokeClaude(buildPlanExchangePrompt(p.persona, p.name, p.otherNames, planDescription, targetDir, conversationHistory, round, exchanges, focus), targetDir, exchangeModel, false)
+                invokeClaude(buildPlanExchangePrompt(p.persona, p.name, p.otherNames, planDescription, targetDir, conversationHistory, round, exchanges, focus, contextNote), targetDir, exchangeModel, false)
                     .then(r => { console.log(`  ${p.name} complete (${r.length} chars)`); return { name: p.name, response: r }; })
                     .catch(e => { console.error(`  ${p.name} failed: ${e.message}`); return { name: p.name, response: null }; })
             );
@@ -1197,7 +1242,7 @@ async function main() {
         const synthPersona = atlasPersona || sorenPersona || morganPersona;
         const synthName = atlasPersona ? 'Atlas' : planActive[0];
         console.log(`Synthesis: ${synthName} — producing pre-flight brief...`);
-        const synthesis = await invokeClaude(buildPlanSynthesisPrompt(synthPersona, planDescription, targetDir, conversationHistory, focus), targetDir, model, verbose)
+        const synthesis = await invokeClaude(buildPlanSynthesisPrompt(synthPersona, planDescription, targetDir, conversationHistory, focus, contextNote), targetDir, model, verbose)
             .catch(e => { console.error(`  Synthesis failed: ${e.message}`); process.exit(1); });
         console.log(`  Synthesis complete (${synthesis.length} chars)`);
 
@@ -1255,9 +1300,9 @@ async function main() {
         const persona = name === 'Soren' ? sorenPersona : name === 'Atlas' ? atlasPersona : morganPersona;
         // Use the appropriate initial prompt builder
         const promptBuilders = {
-            Soren: () => buildSorenInitialPrompt(sorenPersona, targetDir, focus),
-            Atlas: () => buildAtlasIndependentPrompt(atlasPersona, targetDir, focus),
-            Morgan: () => buildMorganIndependentPrompt(morganPersona, targetDir, focus),
+            Soren: () => buildSorenInitialPrompt(sorenPersona, targetDir, focus, contextNote),
+            Atlas: () => buildAtlasIndependentPrompt(atlasPersona, targetDir, focus, contextNote),
+            Morgan: () => buildMorganIndependentPrompt(morganPersona, targetDir, focus, contextNote),
         };
         console.log(`Phase 1: ${name} — initial analysis...`);
         const prompt = promptBuilders[name]();
@@ -1292,7 +1337,7 @@ async function main() {
         const scanLabels = [];
 
         if (includeSoren) {
-            const sorenPrompt = buildSorenInitialPrompt(sorenPersona, targetDir, focus);
+            const sorenPrompt = buildSorenInitialPrompt(sorenPersona, targetDir, focus, contextNote);
             if (verbose) console.log(`  Soren prompt: ${sorenPrompt.length} chars (${estimateTokens(sorenPrompt)} est. tokens)`);
             scanLabels.push('soren');
             scanPromises.push(
@@ -1304,7 +1349,7 @@ async function main() {
         }
 
         if (includeAtlas) {
-            const atlasPrompt = buildAtlasIndependentPrompt(atlasPersona, targetDir, focus);
+            const atlasPrompt = buildAtlasIndependentPrompt(atlasPersona, targetDir, focus, contextNote);
             if (verbose) console.log(`  Atlas prompt: ${atlasPrompt.length} chars (${estimateTokens(atlasPrompt)} est. tokens)`);
             scanLabels.push('atlas');
             scanPromises.push(
@@ -1316,7 +1361,7 @@ async function main() {
         }
 
         if (includeMorgan && morganPersona) {
-            const morganPrompt = buildMorganIndependentPrompt(morganPersona, targetDir, focus);
+            const morganPrompt = buildMorganIndependentPrompt(morganPersona, targetDir, focus, contextNote);
             if (verbose) console.log(`  Morgan prompt: ${morganPrompt.length} chars (${estimateTokens(morganPrompt)} est. tokens)`);
             scanLabels.push('morgan');
             scanPromises.push(
@@ -1352,7 +1397,7 @@ async function main() {
         let phase = 1;
         if (includeSoren) {
             console.log(`Phase ${phase}: Soren — initial code-level analysis...`);
-            const sorenPrompt = buildSorenInitialPrompt(sorenPersona, targetDir, focus);
+            const sorenPrompt = buildSorenInitialPrompt(sorenPersona, targetDir, focus, contextNote);
             if (verbose) console.log(`  Prompt: ${sorenPrompt.length} chars (${estimateTokens(sorenPrompt)} est. tokens)`);
             try {
                 sorenFindings = await invokeClaude(sorenPrompt, targetDir, model, verbose);
@@ -1367,8 +1412,8 @@ async function main() {
         if (includeAtlas) {
             console.log(`Phase ${phase}: Atlas — ${includeSoren ? 'reviewing Soren\'s findings' : 'initial architecture analysis'}...`);
             const atlasPrompt = includeSoren
-                ? buildAtlasReviewPrompt(atlasPersona, targetDir, sorenFindings, focus)
-                : buildAtlasIndependentPrompt(atlasPersona, targetDir, focus);
+                ? buildAtlasReviewPrompt(atlasPersona, targetDir, sorenFindings, focus, contextNote)
+                : buildAtlasIndependentPrompt(atlasPersona, targetDir, focus, contextNote);
             if (verbose) console.log(`  Prompt: ${atlasPrompt.length} chars (${estimateTokens(atlasPrompt)} est. tokens)`);
             try {
                 atlasReview = await invokeClaude(atlasPrompt, targetDir, model, verbose);
@@ -1383,8 +1428,8 @@ async function main() {
         if (includeMorgan && morganPersona) {
             console.log(`Phase ${phase}: Morgan — UX/product review...`);
             const morganPrompt = (includeSoren || includeAtlas)
-                ? buildMorganReviewPrompt(morganPersona, targetDir, sorenFindings, atlasReview, focus)
-                : buildMorganIndependentPrompt(morganPersona, targetDir, focus);
+                ? buildMorganReviewPrompt(morganPersona, targetDir, sorenFindings, atlasReview, focus, contextNote)
+                : buildMorganIndependentPrompt(morganPersona, targetDir, focus, contextNote);
             if (verbose) console.log(`  Prompt: ${morganPrompt.length} chars (${estimateTokens(morganPrompt)} est. tokens)`);
             try {
                 morganReview = await invokeClaude(morganPrompt, targetDir, model, verbose);
@@ -1433,7 +1478,7 @@ async function main() {
             const exchangePromises = participants.map(participant => {
                 const prompt = buildExchangePrompt(
                     participant.persona, participant.name, participant.otherNames,
-                    targetDir, conversationHistory, round, exchanges, focus
+                    targetDir, conversationHistory, round, exchanges, focus, contextNote
                 );
                 if (verbose) console.log(`  ${participant.name} prompt: ${prompt.length} chars`);
 
@@ -1470,7 +1515,7 @@ async function main() {
 
                 const prompt = buildExchangePrompt(
                     participant.persona, participant.name, participant.otherNames,
-                    targetDir, conversationHistory, round, exchanges, focus
+                    targetDir, conversationHistory, round, exchanges, focus, contextNote
                 );
                 if (verbose) console.log(`  Prompt: ${prompt.length} chars (${estimateTokens(prompt)} est. tokens)`);
 
@@ -1493,7 +1538,7 @@ async function main() {
     const synthesizer = atlasPersona || sorenPersona || morganPersona;
     const synthesizerName = atlasPersona ? 'Atlas' : sorenPersona ? 'Soren' : 'Morgan';
     console.log(`Synthesis: ${synthesizerName} — producing final report...`);
-    const synthesisPrompt = buildSynthesisPrompt(synthesizer, targetDir, conversationHistory, focus);
+    const synthesisPrompt = buildSynthesisPrompt(synthesizer, targetDir, conversationHistory, focus, contextNote);
     if (verbose) console.log(`  Prompt: ${synthesisPrompt.length} chars (${estimateTokens(synthesisPrompt)} est. tokens)`);
 
     let finalReport;
@@ -1504,13 +1549,13 @@ async function main() {
         console.error(`  Synthesis failed: ${e.message}`);
         console.log('  Retrying synthesis with condensed context...');
         try {
-            const condensedPrompt = buildCondensedSynthesisPrompt(synthesizer, targetDir, conversationHistory, focus);
+            const condensedPrompt = buildCondensedSynthesisPrompt(synthesizer, targetDir, conversationHistory, focus, contextNote);
             if (verbose) console.log(`  Condensed prompt: ${condensedPrompt.length} chars (${estimateTokens(condensedPrompt)} est. tokens)`);
             finalReport = await invokeClaude(condensedPrompt, targetDir, model, verbose);
             console.log(`  Condensed synthesis complete (${finalReport.length} chars)`);
         } catch (e2) {
             console.error(`  Condensed synthesis also failed: ${e2.message}`);
-            finalReport = buildFallbackReport(targetDir, conversationHistory, focus);
+            finalReport = buildFallbackReport(targetDir, conversationHistory, focus, contextNote);
             console.log('  Generated fallback report from exchange log');
         }
     }
